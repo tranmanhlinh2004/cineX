@@ -1,0 +1,65 @@
+1. Dashboard
+2. Quản lý phim
+   - Danh sách phim
+   - Thể loại phim
+   - Hình ảnh phim
+
+3. Quản lý rạp
+   - Cụm rạp
+   - Phòng chiếu
+   - Sơ đồ ghế
+   - Loại ghế
+
+4. Quản lý lịch chiếu
+   - Suất chiếu
+   - Giá vé
+
+5. Quản lý đặt vé
+   - Đơn đặt vé
+   - Bán vé tại quầy
+   - Trạng thái ghế realtime
+
+6. Quản lý thanh toán
+   - Giao dịch
+   - Hoàn tiền
+   - Hóa đơn
+
+7. Quản lý vé
+   - Vé điện tử
+   - Kiểm vé QR
+
+8. Quản lý khuyến mãi
+   - Mã giảm giá
+   - Chương trình khuyến mãi
+
+9. Quản lý combo
+   - Sản phẩm combo
+   - Đơn combo
+
+10. Quản lý khách hàng
+   - Danh sách khách hàng
+   - Lịch sử đặt vé
+
+11. Quản lý nhân viên
+   - Tài khoản nhân viên
+   - Vai trò
+   - Quyền hạn
+
+12. Nội dung website
+   - Banner
+   - Tin tức
+   - Đánh giá phim
+
+13. Báo cáo thống kê
+   - Doanh thu
+   - Vé bán
+   - Phim
+   - Rạp
+
+14. Thông báo
+
+15. Hỗ trợ khách hàng
+
+16. Cấu hình hệ thống
+
+17. Nhật ký hoạt động
