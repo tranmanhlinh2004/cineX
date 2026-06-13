@@ -573,16 +573,6 @@ function RevenueOrdersChart() {
             strokeWidth="2"
           />
         </svg>
-
-        <div className="absolute left-[48%] top-[92px] hidden w-48 rounded-md border border-slate-200 bg-white p-3 text-sm shadow-sm sm:block">
-          <p className="font-black text-slate-950">Tháng 6</p>
-          <p className="mt-2 font-bold text-blue-600">
-            Doanh thu: 172.000.000đ
-          </p>
-          <p className="mt-2 font-bold text-emerald-600">
-            Đơn đặt vé: {monthSix.orders}
-          </p>
-        </div>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-center gap-5 text-sm font-bold">

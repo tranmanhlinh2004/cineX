@@ -29,6 +29,13 @@ type AdminModuleColumn = {
 
 type AdminModuleRow = Record<string, string>;
 
+type AdminModuleTableSection = {
+  tableTitle: string;
+  tableDescription: string;
+  columns?: AdminModuleColumn[];
+  rows: AdminModuleRow[];
+};
+
 type AdminModulePageProps = {
   eyebrow: string;
   title: string;
@@ -42,6 +49,7 @@ type AdminModulePageProps = {
   tableDescription: string;
   columns: AdminModuleColumn[];
   rows: AdminModuleRow[];
+  tableSections?: AdminModuleTableSection[];
   sideTitle: string;
   sideItems: string[];
   checklistTitle: string;
@@ -145,8 +153,17 @@ export default function AdminModulePage({
   tableDescription,
   columns,
   rows,
+  tableSections,
 }: AdminModulePageProps) {
   const activeBasePath = basePath ?? adminModuleBasePaths[eyebrow];
+  const sections = tableSections ?? [
+    {
+      tableTitle,
+      tableDescription,
+      columns,
+      rows,
+    },
+  ];
 
   return (
     <div className="mx-auto grid max-w-[1440px] gap-5">
@@ -251,14 +268,21 @@ export default function AdminModulePage({
         </div>
       </section>
 
-      <section className="overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+      {sections.map((section) => {
+        const sectionColumns = section.columns ?? columns;
+
+        return (
+          <section
+            key={section.tableTitle}
+            className="overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm"
+          >
           <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-lg font-black text-slate-950">
-                {tableTitle}
+                {section.tableTitle}
               </h3>
               <p className="mt-1 text-sm text-slate-500">
-                {tableDescription}
+                {section.tableDescription}
               </p>
             </div>
           </div>
@@ -267,7 +291,7 @@ export default function AdminModulePage({
             <table className="w-full min-w-[1040px] border-collapse text-left">
               <thead className="bg-slate-200 text-sm uppercase text-slate-950">
                 <tr>
-                  {columns.map((column) => (
+                  {sectionColumns.map((column) => (
                     <th key={column.key} className="px-4 py-4 font-black">
                       {column.label}
                     </th>
@@ -276,10 +300,10 @@ export default function AdminModulePage({
                 </tr>
               </thead>
               <tbody className="text-slate-900">
-                {rows.map((row) => {
+                {section.rows.map((row) => {
                   const rowKey = row.id ?? Object.values(row).join("-");
-                  const rowTitle = row[columns[0]?.key] ?? "bản ghi";
-                  const routeId = getRowRouteId(row, columns);
+                  const rowTitle = row[sectionColumns[0]?.key] ?? "bản ghi";
+                  const routeId = getRowRouteId(row, sectionColumns);
                   const detailHref =
                     activeBasePath && routeId
                       ? `${activeBasePath}/${routeId}`
@@ -291,7 +315,7 @@ export default function AdminModulePage({
                       key={rowKey}
                       className="border-b border-slate-100 transition hover:bg-slate-50"
                     >
-                      {columns.map((column, index) => {
+                      {sectionColumns.map((column, index) => {
                         const value = row[column.key] ?? "";
                         const isStatus =
                           column.key === "status" ||
@@ -373,7 +397,9 @@ export default function AdminModulePage({
               </tbody>
             </table>
           </div>
-      </section>
+          </section>
+        );
+      })}
     </div>
   );
 }

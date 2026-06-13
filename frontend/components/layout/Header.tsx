@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import {
   AUTH_STORAGE_EVENT,
   clearAuthUser,
+  getAuthToken,
   getAuthUser,
   type AuthUser,
 } from "@/lib/auth";
@@ -54,18 +55,29 @@ export default function Header() {
 
   useEffect(() => {
     const syncAuthUser = () => {
-      setAuthUser(getAuthUser());
+      const token = getAuthToken();
+      const user = token ? getAuthUser() : null;
+
+      setAuthUser(user);
       setAuthReady(true);
+
+      if (!user) {
+        setOpenMenu(false);
+      }
     };
 
     syncAuthUser();
 
     window.addEventListener("storage", syncAuthUser);
     window.addEventListener(AUTH_STORAGE_EVENT, syncAuthUser);
+    window.addEventListener("pageshow", syncAuthUser);
+    window.addEventListener("focus", syncAuthUser);
 
     return () => {
       window.removeEventListener("storage", syncAuthUser);
       window.removeEventListener(AUTH_STORAGE_EVENT, syncAuthUser);
+      window.removeEventListener("pageshow", syncAuthUser);
+      window.removeEventListener("focus", syncAuthUser);
     };
   }, []);
 
@@ -81,7 +93,7 @@ export default function Header() {
     clearAuthUser();
     setAuthUser(null);
     setOpenMenu(false);
-    router.push(createLoadingPath("/"));
+    router.replace(createLoadingPath("/"));
   };
 
   const authButtons = (
@@ -225,7 +237,7 @@ export default function Header() {
         </div>
 
         <div className="hidden shrink-0 items-center gap-3 sm:flex">
-          {authReady && (authUser ? userActions : showAuthActions && authButtons)}
+          {authReady && showAuthActions && (authUser ? userActions : authButtons)}
         </div>
 
         <button
@@ -292,7 +304,7 @@ export default function Header() {
             </div>
           )}
 
-          {authReady && authUser && (
+          {authReady && showAuthActions && authUser && (
             <div className="mt-2 grid gap-1 border-t border-white/10 pt-2 sm:hidden">
               <div className="flex items-center gap-3 rounded-md bg-white/5 px-4 py-3">
                 <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-white text-gray-400">

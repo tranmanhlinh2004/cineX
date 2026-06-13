@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import type { LucideIcon } from "lucide-react";
 import {
   Bell,
   Armchair,
   Building2,
   CalendarClock,
+  ChevronDown,
   CircleDollarSign,
   Clapperboard,
   CreditCard,
@@ -15,19 +17,44 @@ import {
   Menu,
   Search,
   Settings,
-  Shield,
   ShieldCheck,
   Ticket,
   Users,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  AUTH_STORAGE_EVENT,
+  clearAuthUser,
+  getAuthToken,
+  getAuthUser,
+  isAdminRole,
+} from "@/lib/auth";
+import { createLoadingPath } from "@/lib/navigation";
 
-const adminNavItems = [
+type AdminNavItem = {
+  label: string;
+  href: string;
+  icon: LucideIcon;
+  children?: {
+    label: string;
+    href: string;
+  }[];
+};
+
+const adminNavItems: AdminNavItem[] = [
   { label: "Tổng quan", href: "/admin/dashboard", icon: LayoutDashboard },
   { label: "Tài khoản", href: "/admin/accounts", icon: Users },
-  { label: "Phân quyền", href: "/admin/permissions", icon: Shield },
-  { label: "Quản lý phim", href: "/admin/movies", icon: Clapperboard },
+  {
+    label: "Quản lý phim",
+    href: "/admin/movies",
+    icon: Clapperboard,
+    children: [
+      { label: "Phim đang chiếu", href: "/admin/movies/now-showing" },
+      { label: "Phim sắp chiếu", href: "/admin/movies/coming-soon" },
+      { label: "Thể loại phim", href: "/admin/movies/genres" },
+    ],
+  },
   { label: "Quản lý rạp", href: "/admin/cinemas", icon: Building2 },
   { label: "Phòng chiếu", href: "/admin/rooms", icon: Armchair },
   { label: "Lịch chiếu, giá vé", href: "/admin/showtimes", icon: CalendarClock },
@@ -44,35 +71,169 @@ function isActivePath(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+function hasAdminSession() {
+  const user = getAuthUser();
+
+  return Boolean(getAuthToken() && user && isAdminRole(user.role));
+}
+
 export default function AdminShell({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   const pathname = usePathname();
+  const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [adminSessionReady, setAdminSessionReady] = useState(false);
+  const [openNavState, setOpenNavState] = useState<{
+    pathname: string;
+    items: Record<string, boolean>;
+  }>({ pathname, items: {} });
+
+  useEffect(() => {
+    const verifyAdminSession = () => {
+      if (hasAdminSession()) {
+        setAdminSessionReady(true);
+        return;
+      }
+
+      setAdminSessionReady(false);
+      setMobileMenuOpen(false);
+      router.replace(createLoadingPath("/"));
+    };
+
+    verifyAdminSession();
+
+    window.addEventListener("storage", verifyAdminSession);
+    window.addEventListener(AUTH_STORAGE_EVENT, verifyAdminSession);
+    window.addEventListener("pageshow", verifyAdminSession);
+    window.addEventListener("focus", verifyAdminSession);
+
+    return () => {
+      window.removeEventListener("storage", verifyAdminSession);
+      window.removeEventListener(AUTH_STORAGE_EVENT, verifyAdminSession);
+      window.removeEventListener("pageshow", verifyAdminSession);
+      window.removeEventListener("focus", verifyAdminSession);
+    };
+  }, [pathname, router]);
+
+  const handleLogout = () => {
+    setAdminSessionReady(false);
+    clearAuthUser();
+    setMobileMenuOpen(false);
+    router.replace(createLoadingPath("/"));
+  };
+
+  const openNavItems =
+    openNavState.pathname === pathname ? openNavState.items : {};
+
+  const toggleNavItem = (href: string, defaultOpen: boolean) => {
+    setOpenNavState((current) => {
+      const currentItems = current.pathname === pathname ? current.items : {};
+
+      return {
+        pathname,
+        items: {
+          ...currentItems,
+          [href]: !(currentItems[href] ?? defaultOpen),
+        },
+      };
+    });
+  };
+
+  if (!adminSessionReady) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f6f7f9] px-6 text-slate-950">
+        <p className="text-center text-sm font-black uppercase text-slate-500">
+          Đang kiểm tra phiên đăng nhập...
+        </p>
+      </main>
+    );
+  }
 
   const navList = (
     <nav className="grid gap-1">
       {adminNavItems.map((item) => {
         const Icon = item.icon;
         const active = isActivePath(pathname, item.href);
+        const activeChild =
+          item.children?.some((child) => isActivePath(pathname, child.href)) ??
+          false;
+        const parentCurrent = pathname === item.href;
+        const hasChildren = Boolean(item.children?.length);
+        const submenuOpen = openNavItems[item.href] ?? activeChild;
+        const submenuId = `admin-submenu-${item.href.replace(/[^a-z0-9]+/gi, "-")}`;
 
         return (
-          <Link
-            key={item.href}
-            href={item.href}
-            aria-current={active ? "page" : undefined}
-            onClick={() => setMobileMenuOpen(false)}
-            className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-bold transition ${
-              active
-                ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
-                : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-            }`}
-          >
-            <Icon size={18} className="shrink-0" />
-            <span className="truncate">{item.label}</span>
-          </Link>
+          <div key={item.href} className="grid gap-1">
+            {hasChildren ? (
+              <button
+                type="button"
+                aria-current={parentCurrent ? "page" : undefined}
+                aria-expanded={submenuOpen}
+                aria-controls={submenuId}
+                onClick={() => toggleNavItem(item.href, activeChild)}
+                className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-left text-sm font-bold transition ${
+                  activeChild
+                    ? "bg-red-50 text-red-700"
+                    : active
+                      ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
+                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+                }`}
+              >
+                <Icon size={18} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                <ChevronDown
+                  size={16}
+                  className={`shrink-0 transition-transform ${
+                    submenuOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+            ) : (
+              <Link
+                href={item.href}
+                aria-current={parentCurrent ? "page" : undefined}
+                onClick={() => setMobileMenuOpen(false)}
+                className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-bold transition ${
+                  active
+                    ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+                }`}
+              >
+                <Icon size={18} className="shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            )}
+
+            {item.children && submenuOpen ? (
+              <div
+                id={submenuId}
+                className="ml-6 grid gap-1 border-l border-slate-200 pl-3"
+              >
+                {item.children.map((child) => {
+                  const childActive = isActivePath(pathname, child.href);
+
+                  return (
+                    <Link
+                      key={child.href}
+                      href={child.href}
+                      aria-current={childActive ? "page" : undefined}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className={`flex min-h-9 items-center rounded-md px-3 text-sm font-bold transition ${
+                        childActive
+                          ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
+                          : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"
+                      }`}
+                    >
+                      <span className="truncate">{child.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
         );
       })}
     </nav>
@@ -110,13 +271,14 @@ export default function AdminShell({
         </div>
 
         <div className="border-t border-slate-200 p-4">
-          <Link
-            href="/"
+          <button
+            type="button"
+            onClick={handleLogout}
             className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
           >
             <LogOut size={17} />
-            Về website
-          </Link>
+            Đăng xuất
+          </button>
         </div>
       </aside>
 
@@ -186,14 +348,14 @@ export default function AdminShell({
                 />
               </label>
               <div className="mt-4">{navList}</div>
-              <Link
-                href="/"
-                onClick={() => setMobileMenuOpen(false)}
+              <button
+                type="button"
+                onClick={handleLogout}
                 className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-200 text-sm font-black text-slate-700"
               >
                 <LogOut size={17} />
-                Về website
-              </Link>
+                Đăng xuất
+              </button>
             </div>
           ) : null}
         </header>

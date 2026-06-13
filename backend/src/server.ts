@@ -25,7 +25,7 @@ const prisma = new PrismaClient({
 
 const port = Number(process.env.PORT ?? 4000);
 const corsOrigin = process.env.CORS_ORIGIN ?? "*";
-const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF"]);
+const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF", "ACCOUNTANT"]);
 const homeSectionLimit = 9;
 const catalogPageSize = 9;
 const maxCatalogPageSize = 24;
@@ -97,7 +97,7 @@ const currencyFormatter = new Intl.NumberFormat("vi-VN", {
 
 function setCorsHeaders(response: ServerResponse) {
   response.setHeader("Access-Control-Allow-Origin", corsOrigin);
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
@@ -710,6 +710,494 @@ async function getAuthenticatedUser(request: IncomingMessage) {
   }
 
   return refreshToken.user;
+}
+
+function isAdminUser(user: { role: { name: string } }) {
+  return adminRoles.has(user.role.name.toUpperCase());
+}
+
+const adminAccountRoleLabels = {
+  ADMIN: "Quản trị viên",
+  MANAGER: "Quản lý rạp",
+  STAFF: "Nhân viên rạp",
+  ACCOUNTANT: "Kế toán",
+  CUSTOMER: "Khách hàng",
+} as const;
+
+const adminAccountRoleDescriptions = {
+  ADMIN: "Quản trị viên hệ thống",
+  MANAGER: "Quản lý rạp phim",
+  STAFF: "Nhân viên rạp phim",
+  ACCOUNTANT: "Kế toán",
+  CUSTOMER: "Khách hàng",
+} as const;
+
+type AdminAccountRoleName = keyof typeof adminAccountRoleLabels;
+
+function normalizeAdminAccountInput(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+const adminAccountRoleNameByLabel = new Map<string, AdminAccountRoleName>(
+  Object.entries(adminAccountRoleLabels).map(([roleName, roleLabel]) => [
+    normalizeAdminAccountInput(roleLabel),
+    roleName as AdminAccountRoleName,
+  ]),
+);
+
+function getAdminAccountRoleName(roleInput: string) {
+  const normalizedRoleName = roleInput.trim().toUpperCase();
+
+  if (normalizedRoleName in adminAccountRoleLabels) {
+    return normalizedRoleName as AdminAccountRoleName;
+  }
+
+  return adminAccountRoleNameByLabel.get(normalizeAdminAccountInput(roleInput)) ?? null;
+}
+
+function getAdminAccountRoleNameFromBody(body: JsonBody) {
+  const roleInput =
+    stringField(body, "roleName") || stringField(body, "role") || stringField(body, "roleLabel");
+
+  return roleInput ? getAdminAccountRoleName(roleInput) : null;
+}
+
+async function ensureAdminAccountRole(roleName: AdminAccountRoleName) {
+  return prisma.role.upsert({
+    where: {
+      name: roleName,
+    },
+    update: {
+      description: adminAccountRoleDescriptions[roleName],
+    },
+    create: {
+      name: roleName,
+      description: adminAccountRoleDescriptions[roleName],
+    },
+  });
+}
+
+function parseAdminAccountIsActive(body: JsonBody, fallback: boolean) {
+  if (typeof body.isActive === "boolean") {
+    return { value: body.isActive } as const;
+  }
+
+  const status = stringField(body, "status");
+
+  if (!status) {
+    return { value: fallback } as const;
+  }
+
+  const normalizedStatus = normalizeAdminAccountInput(status);
+
+  if (normalizedStatus.includes("hoat dong")) {
+    return { value: true } as const;
+  }
+
+  if (
+    normalizedStatus.includes("khoa") ||
+    normalizedStatus.includes("tam dung") ||
+    normalizedStatus.includes("cho xac minh")
+  ) {
+    return { value: false } as const;
+  }
+
+  return { error: "Trạng thái tài khoản không hợp lệ." } as const;
+}
+
+function phoneField(body: JsonBody) {
+  const phone = stringField(body, "phone");
+
+  return phone && phone !== "Chưa cập nhật" ? phone : null;
+}
+
+function formatDateTimeLabel(date: Date) {
+  return `${fullDateFormatter.format(date)} ${timeFormatter.format(date)}`;
+}
+
+const adminAccountUserInclude = {
+  role: true,
+  refreshTokens: {
+    orderBy: {
+      createdAt: "desc",
+    },
+    take: 1,
+    select: {
+      createdAt: true,
+    },
+  },
+} satisfies Prisma.UserInclude;
+
+async function fetchAdminAccountUsers() {
+  return prisma.user.findMany({
+    orderBy: [{ roleId: "asc" }, { updatedAt: "desc" }, { id: "desc" }],
+    include: adminAccountUserInclude,
+  });
+}
+
+async function fetchAdminAccountUserById(userId: number) {
+  return prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+    include: adminAccountUserInclude,
+  });
+}
+
+type AdminAccountUserRecord = Awaited<ReturnType<typeof fetchAdminAccountUsers>>[number];
+
+function getRoleDisplayName(roleName: string) {
+  const normalizedRoleName = roleName.toUpperCase() as AdminAccountRoleName;
+
+  return adminAccountRoleLabels[normalizedRoleName] ?? roleName;
+}
+
+function serializeAdminAccount(user: AdminAccountUserRecord) {
+  const roleName = user.role.name;
+  const lastLoginAt = user.refreshTokens[0]?.createdAt ?? user.updatedAt;
+
+  return {
+    id: user.id,
+    name: user.fullName,
+    email: user.email,
+    phone: user.phone ?? "",
+    role: roleName,
+    roleLabel: getRoleDisplayName(roleName),
+    roleId: user.roleId,
+    isSystemAccount: adminRoles.has(roleName.toUpperCase()),
+    isActive: user.isActive,
+    status: user.isActive ? "Đang hoạt động" : "Bị khóa",
+    lastLogin: formatDateTimeLabel(lastLoginAt),
+    lastLoginAt: lastLoginAt.toISOString(),
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+  };
+}
+
+async function handleGetAdminAccounts(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để xem danh sách tài khoản." });
+    return;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền quản lý tài khoản." });
+    return;
+  }
+
+  const accounts = (await fetchAdminAccountUsers()).map(serializeAdminAccount);
+  const customerAccounts = accounts.filter((account) => !account.isSystemAccount);
+  const systemAccounts = accounts.filter((account) => account.isSystemAccount);
+  const activeAccounts = accounts.filter((account) => account.isActive);
+  const blockedAccounts = accounts.filter((account) => !account.isActive);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    accounts,
+    customerAccounts,
+    systemAccounts,
+    stats: {
+      totalAccounts: accounts.length,
+      activeAccounts: activeAccounts.length,
+      systemAccounts: systemAccounts.length,
+      blockedAccounts: blockedAccounts.length,
+    },
+  });
+}
+
+async function getAdminAccountRequestUser(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý tài khoản." });
+    return null;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền quản lý tài khoản." });
+    return null;
+  }
+
+  return user;
+}
+
+async function hasAnotherActiveAdminUser(userId: number) {
+  const adminRole = await prisma.role.findUnique({
+    where: {
+      name: "ADMIN",
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!adminRole) {
+    return false;
+  }
+
+  const activeAdminCount = await prisma.user.count({
+    where: {
+      id: {
+        not: userId,
+      },
+      roleId: adminRole.id,
+      isActive: true,
+    },
+  });
+
+  return activeAdminCount > 0;
+}
+
+function isPrismaErrorCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
+async function handleCreateAdminAccount(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminAccountRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const fullName = stringField(body, "fullName") || stringField(body, "name");
+  const email = stringField(body, "email").toLowerCase();
+  const password = stringField(body, "password");
+  const roleName = getAdminAccountRoleNameFromBody(body);
+  const parsedIsActive = parseAdminAccountIsActive(body, true);
+
+  if (!fullName || !email || !password || !roleName) {
+    sendJson(response, 400, {
+      message: "Vui lòng nhập họ tên, email, mật khẩu và vai trò.",
+    });
+    return;
+  }
+
+  if (!emailPattern.test(email)) {
+    sendJson(response, 400, { message: "Email không hợp lệ." });
+    return;
+  }
+
+  if (password.length < 6) {
+    sendJson(response, 400, { message: "Mật khẩu cần tối thiểu 6 ký tự." });
+    return;
+  }
+
+  if ("error" in parsedIsActive) {
+    sendJson(response, 400, { message: parsedIsActive.error });
+    return;
+  }
+
+  const existingUser = await prisma.user.findUnique({
+    where: {
+      email,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (existingUser) {
+    sendJson(response, 409, { message: "Email này đã được sử dụng bởi tài khoản khác." });
+    return;
+  }
+
+  const role = await ensureAdminAccountRole(roleName);
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const createdUser = await prisma.user.create({
+    data: {
+      roleId: role.id,
+      fullName,
+      email,
+      phone: phoneField(body),
+      password: hashedPassword,
+      isActive: parsedIsActive.value,
+    },
+    include: adminAccountUserInclude,
+  });
+
+  sendJson(response, 201, {
+    message: "Thêm tài khoản thành công.",
+    account: serializeAdminAccount(createdUser),
+  });
+}
+
+async function handleUpdateAdminAccount(
+  request: IncomingMessage,
+  response: ServerResponse,
+  accountId: number,
+) {
+  const requestUser = await getAdminAccountRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingAccount = await fetchAdminAccountUserById(accountId);
+
+  if (!existingAccount) {
+    sendJson(response, 404, { message: "Không tìm thấy tài khoản cần cập nhật." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const fullName = stringField(body, "fullName") || stringField(body, "name");
+  const email = stringField(body, "email").toLowerCase();
+  const password = stringField(body, "password");
+  const roleName = getAdminAccountRoleNameFromBody(body);
+  const parsedIsActive = parseAdminAccountIsActive(body, existingAccount.isActive);
+
+  if (!fullName || !email || !roleName) {
+    sendJson(response, 400, { message: "Vui lòng nhập họ tên, email và vai trò." });
+    return;
+  }
+
+  if (!emailPattern.test(email)) {
+    sendJson(response, 400, { message: "Email không hợp lệ." });
+    return;
+  }
+
+  if (password && password.length < 6) {
+    sendJson(response, 400, { message: "Mật khẩu mới cần tối thiểu 6 ký tự." });
+    return;
+  }
+
+  if ("error" in parsedIsActive) {
+    sendJson(response, 400, { message: parsedIsActive.error });
+    return;
+  }
+
+  if (existingAccount.id === requestUser.id && !parsedIsActive.value) {
+    sendJson(response, 409, { message: "Không thể khóa chính tài khoản đang đăng nhập." });
+    return;
+  }
+
+  if (existingAccount.id === requestUser.id && !adminRoles.has(roleName)) {
+    sendJson(response, 409, { message: "Không thể bỏ quyền quản trị của chính tài khoản đang đăng nhập." });
+    return;
+  }
+
+  const existingEmailOwner = await prisma.user.findFirst({
+    where: {
+      email,
+      id: {
+        not: existingAccount.id,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (existingEmailOwner) {
+    sendJson(response, 409, { message: "Email này đã được sử dụng bởi tài khoản khác." });
+    return;
+  }
+
+  const wasActiveAdmin = existingAccount.role.name.toUpperCase() === "ADMIN" && existingAccount.isActive;
+  const remainsActiveAdmin = roleName === "ADMIN" && parsedIsActive.value;
+
+  if (wasActiveAdmin && !remainsActiveAdmin && !(await hasAnotherActiveAdminUser(existingAccount.id))) {
+    sendJson(response, 409, { message: "Hệ thống cần giữ lại ít nhất một quản trị viên đang hoạt động." });
+    return;
+  }
+
+  const role = await ensureAdminAccountRole(roleName);
+  const updateData: Prisma.UserUpdateInput = {
+    fullName,
+    email,
+    phone: phoneField(body),
+    isActive: parsedIsActive.value,
+    role: {
+      connect: {
+        id: role.id,
+      },
+    },
+  };
+
+  if (password) {
+    updateData.password = await bcrypt.hash(password, 10);
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: {
+      id: existingAccount.id,
+    },
+    data: updateData,
+    include: adminAccountUserInclude,
+  });
+
+  sendJson(response, 200, {
+    message: "Cập nhật tài khoản thành công.",
+    account: serializeAdminAccount(updatedUser),
+  });
+}
+
+async function handleDeleteAdminAccount(
+  request: IncomingMessage,
+  response: ServerResponse,
+  accountId: number,
+) {
+  const requestUser = await getAdminAccountRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingAccount = await fetchAdminAccountUserById(accountId);
+
+  if (!existingAccount) {
+    sendJson(response, 404, { message: "Không tìm thấy tài khoản cần xóa." });
+    return;
+  }
+
+  if (existingAccount.id === requestUser.id) {
+    sendJson(response, 409, { message: "Không thể xóa chính tài khoản đang đăng nhập." });
+    return;
+  }
+
+  const isActiveAdmin = existingAccount.role.name.toUpperCase() === "ADMIN" && existingAccount.isActive;
+
+  if (isActiveAdmin && !(await hasAnotherActiveAdminUser(existingAccount.id))) {
+    sendJson(response, 409, { message: "Hệ thống cần giữ lại ít nhất một quản trị viên đang hoạt động." });
+    return;
+  }
+
+  try {
+    await prisma.user.delete({
+      where: {
+        id: existingAccount.id,
+      },
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2003")) {
+      sendJson(response, 409, {
+        message:
+          "Tài khoản đã có dữ liệu phát sinh như đặt vé hoặc nhật ký. Hãy khóa tài khoản thay vì xóa.",
+      });
+      return;
+    }
+
+    throw error;
+  }
+
+  sendJson(response, 200, {
+    message: "Xóa tài khoản thành công.",
+    deletedId: existingAccount.id,
+  });
 }
 
 function validateAvatarUrl(avatarUrl: string) {
@@ -2213,6 +2701,32 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "POST" && requestUrl.pathname === "/api/auth/register") {
       await handleRegister(request, response);
       return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/accounts") {
+      await handleGetAdminAccounts(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/admin/accounts") {
+      await handleCreateAdminAccount(request, response);
+      return;
+    }
+
+    const adminAccountMatch = requestUrl.pathname.match(/^\/api\/admin\/accounts\/(\d+)$/);
+
+    if (adminAccountMatch) {
+      const accountId = Number.parseInt(adminAccountMatch[1], 10);
+
+      if (request.method === "PUT") {
+        await handleUpdateAdminAccount(request, response, accountId);
+        return;
+      }
+
+      if (request.method === "DELETE") {
+        await handleDeleteAdminAccount(request, response, accountId);
+        return;
+      }
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/account/profile") {

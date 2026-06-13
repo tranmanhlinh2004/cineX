@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { EyeOff, Lock, Mail } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { login as loginRequest } from "@/lib/auth-api";
-import { getRedirectPathForRole, saveAuthUser } from "@/lib/auth";
+import { getAuthToken, getAuthUser, getRedirectPathForRole, saveAuthUser } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
 
 export default function LoginPage() {
@@ -15,6 +15,15 @@ export default function LoginPage() {
   const [rememberAccount, setRememberAccount] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    const token = getAuthToken();
+    const user = token ? getAuthUser() : null;
+
+    if (user) {
+      router.replace(createLoadingPath(getRedirectPathForRole(user.role)));
+    }
+  }, [router]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
