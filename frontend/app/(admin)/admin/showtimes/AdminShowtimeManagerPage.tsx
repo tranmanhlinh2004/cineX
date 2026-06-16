@@ -67,6 +67,23 @@ const emptyOptions: AdminShowtimeOptions = {
   movies: [],
   rooms: [],
 };
+
+function getVietnamDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getDefaultShowtimeStartTime(dateKey?: string) {
+  return `${dateKey || getVietnamDateKey()}T09:00`;
+}
+
 const defaultFilters: ShowtimeFilters = {
   query: "",
   dateKey: "",
@@ -205,12 +222,15 @@ function getCalculatedEndTime(
 function buildFormState(
   options: AdminShowtimeOptions,
   showtime?: AdminShowtimeRecord,
+  dateKey?: string,
 ): ShowtimeFormState {
   return {
     id: showtime?.id,
     movieId: String(showtime?.movieId ?? options.movies[0]?.id ?? ""),
     roomId: String(showtime?.roomId ?? options.rooms[0]?.id ?? ""),
-    startTime: toDateTimeLocal(showtime?.startTime),
+    startTime: showtime
+      ? toDateTimeLocal(showtime.startTime)
+      : getDefaultShowtimeStartTime(dateKey),
     endTime: toDateTimeLocal(showtime?.endTime),
     basePrice: showtime ? String(showtime.basePrice) : "90000",
     statusCode: showtime?.statusCode ?? "ACTIVE",
@@ -270,7 +290,10 @@ export default function AdminShowtimeManagerPage({
   const [actionError, setActionError] = useState("");
   const [deletingShowtimeId, setDeletingShowtimeId] = useState<number | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [filters, setFilters] = useState(defaultFilters);
+  const [filters, setFilters] = useState<ShowtimeFilters>(() => ({
+    ...defaultFilters,
+    dateKey: getVietnamDateKey(),
+  }));
   const [modalMode, setModalMode] = useState<ShowtimeModalMode>("create");
   const [formState, setFormState] = useState<ShowtimeFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -282,6 +305,7 @@ export default function AdminShowtimeManagerPage({
     try {
       const data = await getAdminShowtimes({
         sort: variant === "sessions" ? "recent" : "schedule",
+        date: filters.dateKey || undefined,
       });
 
       setShowtimes(data.showtimes);
@@ -296,7 +320,7 @@ export default function AdminShowtimeManagerPage({
     } finally {
       setLoading(false);
     }
-  }, [variant]);
+  }, [filters.dateKey, variant]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -372,7 +396,7 @@ export default function AdminShowtimeManagerPage({
   const openCreateModal = () => {
     setActionError("");
     setModalMode("create");
-    setFormState(buildFormState(options));
+    setFormState(buildFormState(options, undefined, filters.dateKey));
   };
 
   const openEditModal = (showtime: AdminShowtimeRecord) => {

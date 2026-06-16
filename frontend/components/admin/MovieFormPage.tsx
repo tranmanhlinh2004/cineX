@@ -615,10 +615,6 @@ function ImagePicker({
           setFileName(file.name);
         }}
       />
-
-      <p className="min-h-5 truncate text-xs font-bold text-slate-500">
-        {fileName || "Chưa chọn ảnh mới"}
-      </p>
     </div>
   );
 }

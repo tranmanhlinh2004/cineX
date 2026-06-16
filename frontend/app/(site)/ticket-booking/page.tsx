@@ -67,6 +67,7 @@ const emptyCinemas: TicketBookingOptions["cinemas"] = [];
 const emptyDates: TicketBookingOptions["dates"] = [];
 const emptyShowtimes: TicketBookingOptions["showtimes"] = [];
 const emptyPaymentMethods: TicketBookingOptions["paymentMethods"] = [];
+const seatMapRefreshIntervalMs = 5000;
 
 type Notice = {
   type: "success" | "error";
@@ -169,25 +170,68 @@ export default function TicketBookingPage() {
     setPromotionNotice(null);
   };
 
-  const loadSeatMap = async (showtimeId: number) => {
-    setIsLoadingSeats(true);
-    setNotice(null);
+  const loadSeatMap = async (
+    showtimeId: number,
+    options: { silent?: boolean } = {},
+  ) => {
+    if (!options.silent) {
+      setIsLoadingSeats(true);
+      setNotice(null);
+    }
 
     try {
       const data = await getTicketBookingSeatMap(showtimeId);
 
       setSeatMap(data);
-    } catch (error) {
-      setSeatMap(null);
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải sơ đồ ghế.",
+      setOptions((currentOptions) =>
+        currentOptions
+          ? {
+              ...currentOptions,
+              showtimes: currentOptions.showtimes.map((showtime) =>
+                showtime.id === data.showtime.id
+                  ? {
+                      ...showtime,
+                      availableSeats: data.showtime.availableSeats,
+                    }
+                  : showtime,
+              ),
+            }
+          : currentOptions,
+      );
+      setSelectedSeatIds((currentSeatIds) => {
+        const availableSeatIds = new Set(
+          data.seats.filter((seat) => seat.isAvailable).map((seat) => seat.id),
+        );
+        const nextSeatIds = currentSeatIds.filter((seatId) =>
+          availableSeatIds.has(seatId),
+        );
+
+        if (options.silent && nextSeatIds.length < currentSeatIds.length) {
+          setNotice({
+            type: "error",
+            text:
+              "Một hoặc nhiều ghế bạn đang chọn vừa được giữ hoặc đặt bởi khách khác. Vui lòng chọn ghế khác.",
+          });
+          clearAppliedPromotion();
+        }
+
+        return nextSeatIds;
       });
+    } catch (error) {
+      if (!options.silent) {
+        setSeatMap(null);
+        setNotice({
+          type: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : "Không thể tải sơ đồ ghế.",
+        });
+      }
     } finally {
-      setIsLoadingSeats(false);
+      if (!options.silent) {
+        setIsLoadingSeats(false);
+      }
     }
   };
 
@@ -263,6 +307,19 @@ export default function TicketBookingPage() {
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selectedShowtimeId || isSubmitting) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadSeatMap(selectedShowtimeId, { silent: true });
+    }, seatMapRefreshIntervalMs);
+
+    return () => window.clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSubmitting, selectedShowtimeId]);
 
   const updateFilter = (nextFilter: Partial<ShowtimeFilter>) => {
     if (!options) {

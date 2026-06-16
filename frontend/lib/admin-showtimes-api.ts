@@ -137,11 +137,17 @@ async function requestAdmin<T>(path: string, options: RequestAdminOptions = {}) 
   return data as T;
 }
 
-export function getAdminShowtimes(options: { sort?: AdminShowtimeSortMode } = {}) {
+export function getAdminShowtimes(
+  options: { sort?: AdminShowtimeSortMode; date?: string } = {},
+) {
   const searchParams = new URLSearchParams();
 
   if (options.sort) {
     searchParams.set("sort", options.sort);
+  }
+
+  if (options.date) {
+    searchParams.set("date", options.date);
   }
 
   const query = searchParams.toString();

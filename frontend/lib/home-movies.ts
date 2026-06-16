@@ -133,6 +133,27 @@ export type MovieDetailData = {
   notFound?: boolean;
 };
 
+export type MovieRecommendationBasis = {
+  type: "PERSONALIZED" | "SAME_GENRE";
+  isPersonalized: boolean;
+  topGenre: string | null;
+  topGenres: string[];
+  bookingGenres: {
+    id: number;
+    name: string;
+    bookingCount: number;
+  }[];
+};
+
+export type MovieRecommendationsData = {
+  generatedAt: string | null;
+  movieId: number;
+  basis: MovieRecommendationBasis;
+  recommendations: HomeMovie[];
+  error?: string;
+  notFound?: boolean;
+};
+
 export type MovieCatalogPagination = {
   page: number;
   pageSize: number;

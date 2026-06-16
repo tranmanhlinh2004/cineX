@@ -1,5 +1,6 @@
 import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
+import FloatingSupportWidget from "@/components/support/FloatingSupportWidget";
 
 export default function SiteLayout({
   children,
@@ -11,6 +12,7 @@ export default function SiteLayout({
       <Header />
       <div className="flex-1">{children}</div>
       <Footer />
+      <FloatingSupportWidget />
     </div>
   );
 }

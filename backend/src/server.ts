@@ -33,6 +33,7 @@ const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF", "ACCOUNTANT"]);
 const homeSectionLimit = 9;
 const catalogPageSize = 9;
 const maxCatalogPageSize = 24;
+const movieRecommendationLimit = 6;
 const maxJsonBodyLength = 15_000_000;
 const avatarMaxBytes = 10 * 1024 * 1024;
 const avatarDataUrlPattern = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
@@ -56,6 +57,7 @@ const demoShowtimeRefreshDayCount = 5;
 const showtimeChangeoverMinutes = 15;
 const dayInMs = 24 * 60 * 60 * 1000;
 const catalogDateKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
+const recommendedMovieStatuses = ["NOW_SHOWING", "COMING_SOON"] satisfies MovieStatus[];
 
 type JsonBody = Record<string, unknown>;
 
@@ -890,6 +892,208 @@ async function loadMovieDetailData(movieId: number) {
   return {
     generatedAt: now.toISOString(),
     movie: serializeHomeMovie(movie),
+  };
+}
+
+type PreferredGenreScore = {
+  id: number;
+  name: string;
+  bookingCount: number;
+};
+
+async function fetchUserPreferredGenres(userId: number) {
+  await expireOverduePendingBookings(userId);
+
+  const bookedDetails = await prisma.bookingDetail.findMany({
+    where: {
+      booking: {
+        userId,
+        status: BookingStatus.CONFIRMED,
+      },
+    },
+    select: {
+      showtime: {
+        select: {
+          movie: {
+            select: {
+              movieGenres: {
+                select: {
+                  genre: {
+                    select: {
+                      id: true,
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const genreScores = new Map<number, PreferredGenreScore>();
+
+  for (const detail of bookedDetails) {
+    for (const movieGenre of detail.showtime.movie.movieGenres) {
+      const genre = movieGenre.genre;
+      const currentScore = genreScores.get(genre.id);
+
+      if (currentScore) {
+        currentScore.bookingCount += 1;
+      } else {
+        genreScores.set(genre.id, {
+          id: genre.id,
+          name: genre.name,
+          bookingCount: 1,
+        });
+      }
+    }
+  }
+
+  return [...genreScores.values()].sort(
+    (leftGenre, rightGenre) =>
+      rightGenre.bookingCount - leftGenre.bookingCount ||
+      leftGenre.name.localeCompare(rightGenre.name, "vi"),
+  );
+}
+
+function getMovieGenreScoreMap(movie: Pick<HomeMovieRecord, "movieGenres">) {
+  return new Map(movie.movieGenres.map((movieGenre) => [movieGenre.genreId, 1]));
+}
+
+function getMovieGenreNames(movie: Pick<HomeMovieRecord, "movieGenres">) {
+  return movie.movieGenres.map((movieGenre) => movieGenre.genre.name);
+}
+
+async function fetchRecommendedMovieRecords(
+  now: Date,
+  movieId: number,
+  genreIds: number[],
+) {
+  if (genreIds.length === 0) {
+    return [];
+  }
+
+  return fetchHomeMovieRecords(now, {
+    where: {
+      id: {
+        not: movieId,
+      },
+      status: {
+        in: recommendedMovieStatuses,
+      },
+      movieGenres: {
+        some: {
+          genreId: {
+            in: genreIds,
+          },
+        },
+      },
+    },
+  });
+}
+
+function getMovieRecommendationScore(
+  movie: HomeMovieRecord,
+  genreScores: Map<number, number>,
+  currentMovieGenreIds: Set<number>,
+) {
+  let score = 0;
+
+  for (const movieGenre of movie.movieGenres) {
+    score += genreScores.get(movieGenre.genreId) ?? 0;
+
+    if (currentMovieGenreIds.has(movieGenre.genreId)) {
+      score += 0.25;
+    }
+  }
+
+  if (movie.status === "NOW_SHOWING") {
+    score += 0.5;
+  }
+
+  if (movie.showtimes.length > 0) {
+    score += 0.25;
+  }
+
+  return score;
+}
+
+async function loadMovieRecommendationsData(request: IncomingMessage, movieId: number) {
+  const now = new Date();
+  const currentMovie = await fetchMovieRecordById(movieId, now);
+
+  if (!currentMovie) {
+    return null;
+  }
+
+  const user = await getAuthenticatedUser(request);
+  const preferredGenres = user ? await fetchUserPreferredGenres(user.id) : [];
+  const userGenreScores = new Map(
+    preferredGenres.map((genre) => [genre.id, genre.bookingCount]),
+  );
+  const currentMovieGenreScores = getMovieGenreScoreMap(currentMovie);
+  const currentMovieGenreIds = new Set(currentMovieGenreScores.keys());
+  const hasPersonalizedSignal = userGenreScores.size > 0;
+  let mode: "PERSONALIZED" | "SAME_GENRE" = hasPersonalizedSignal
+    ? "PERSONALIZED"
+    : "SAME_GENRE";
+  let activeGenreScores = hasPersonalizedSignal ? userGenreScores : currentMovieGenreScores;
+  let candidateMovies = await fetchRecommendedMovieRecords(
+    now,
+    movieId,
+    [...activeGenreScores.keys()],
+  );
+
+  if (candidateMovies.length === 0 && hasPersonalizedSignal && currentMovieGenreScores.size > 0) {
+    mode = "SAME_GENRE";
+    activeGenreScores = currentMovieGenreScores;
+    candidateMovies = await fetchRecommendedMovieRecords(
+      now,
+      movieId,
+      [...activeGenreScores.keys()],
+    );
+  }
+
+  const scoredMovies = candidateMovies
+    .map((movie) => ({
+      movie,
+      score: getMovieRecommendationScore(movie, activeGenreScores, currentMovieGenreIds),
+    }))
+    .filter((item) => item.score > 0)
+    .sort(
+      (leftItem, rightItem) =>
+        rightItem.score - leftItem.score ||
+        getMovieStatusRank(leftItem.movie.status) - getMovieStatusRank(rightItem.movie.status) ||
+        rightItem.movie.updatedAt.getTime() - leftItem.movie.updatedAt.getTime() ||
+        rightItem.movie.id - leftItem.movie.id,
+    )
+    .slice(0, movieRecommendationLimit);
+
+  const recommendations = filterHomeMovieShowtimesForDisplay(
+    scoredMovies.map((item) => serializeHomeMovie(item.movie)),
+  );
+  const personalizedTopGenres = preferredGenres
+    .slice(0, 3)
+    .map((genre) => genre.name);
+  const fallbackTopGenres = getMovieGenreNames(currentMovie).slice(0, 3);
+
+  return {
+    generatedAt: now.toISOString(),
+    movieId,
+    basis: {
+      type: mode,
+      isPersonalized: mode === "PERSONALIZED",
+      topGenre:
+        mode === "PERSONALIZED"
+          ? personalizedTopGenres[0] ?? null
+          : fallbackTopGenres[0] ?? null,
+      topGenres: mode === "PERSONALIZED" ? personalizedTopGenres : fallbackTopGenres,
+      bookingGenres: preferredGenres.slice(0, 5),
+    },
+    recommendations,
   };
 }
 
@@ -2406,6 +2610,9 @@ const adminShowtimeInclude = {
       duration: true,
       language: true,
       ageLimit: true,
+      status: true,
+      releaseDate: true,
+      endDate: true,
     },
   },
   room: {
@@ -2593,6 +2800,12 @@ function serializeAdminShowtime(showtime: AdminShowtimeRecord) {
 
 type AdminShowtimeSortMode = "schedule" | "recent";
 
+type AdminShowtimeDateRange = {
+  dateKey: string;
+  start: Date;
+  end: Date;
+};
+
 function getAdminShowtimeSortMode(request: IncomingMessage): AdminShowtimeSortMode {
   const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host}`);
   const sort = requestUrl.searchParams.get("sort");
@@ -2600,8 +2813,65 @@ function getAdminShowtimeSortMode(request: IncomingMessage): AdminShowtimeSortMo
   return sort === "recent" ? "recent" : "schedule";
 }
 
-async function fetchAdminShowtimes(sortMode: AdminShowtimeSortMode = "schedule") {
+function getNowShowingMovieWhere(dateRange?: AdminShowtimeDateRange): Prisma.MovieWhereInput {
+  const filters: Prisma.MovieWhereInput[] = [{ status: "NOW_SHOWING" }];
+
+  if (dateRange) {
+    filters.push(
+      {
+        OR: [
+          { releaseDate: null },
+          {
+            releaseDate: {
+              lt: dateRange.end,
+            },
+          },
+        ],
+      },
+      {
+        OR: [
+          { endDate: null },
+          {
+            endDate: {
+              gte: dateRange.start,
+            },
+          },
+        ],
+      },
+    );
+  }
+
+  return filters.length === 1 ? filters[0] : { AND: filters };
+}
+
+function isNowShowingMovieInRange(
+  movie: Pick<AdminShowtimeRecord["movie"], "status" | "releaseDate" | "endDate">,
+  dateRange: AdminShowtimeDateRange,
+) {
+  return (
+    movie.status === "NOW_SHOWING" &&
+    (!movie.releaseDate || movie.releaseDate < dateRange.end) &&
+    (!movie.endDate || movie.endDate >= dateRange.start)
+  );
+}
+
+async function fetchAdminShowtimes(
+  sortMode: AdminShowtimeSortMode = "schedule",
+  dateRange?: AdminShowtimeDateRange,
+) {
+  const where: Prisma.ShowtimeWhereInput = {
+    movie: getNowShowingMovieWhere(dateRange),
+  };
+
+  if (dateRange) {
+    where.startTime = {
+      gte: dateRange.start,
+      lt: dateRange.end,
+    };
+  }
+
   return prisma.showtime.findMany({
+    where,
     orderBy:
       sortMode === "recent"
         ? [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }]
@@ -2619,9 +2889,10 @@ async function fetchAdminShowtimeById(showtimeId: number) {
   });
 }
 
-async function fetchAdminShowtimeOptions() {
+async function fetchAdminShowtimeOptions(dateRange?: AdminShowtimeDateRange) {
   const [movies, rooms] = await Promise.all([
     prisma.movie.findMany({
+      where: getNowShowingMovieWhere(dateRange),
       orderBy: {
         title: "asc",
       },
@@ -2726,9 +2997,24 @@ async function handleGetAdminShowtimes(request: IncomingMessage, response: Serve
     return;
   }
 
+  const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  const dateKey = requestUrl.searchParams.get("date")?.trim();
+  const requestedDateRange = dateKey
+    ? getVietnamDateRangeFromDateKey(dateKey)
+    : getVietnamDateRange(new Date());
+
+  if (!requestedDateRange) {
+    sendJson(response, 400, { message: "Ngày chiếu không hợp lệ." });
+    return;
+  }
+
+  const dateRange: AdminShowtimeDateRange = requestedDateRange;
+
+  await refreshStaleTicketBookingShowtimes();
+
   const [showtimeRecords, options] = await Promise.all([
-    fetchAdminShowtimes(getAdminShowtimeSortMode(request)),
-    fetchAdminShowtimeOptions(),
+    fetchAdminShowtimes(getAdminShowtimeSortMode(request), dateRange),
+    fetchAdminShowtimeOptions(dateRange),
   ]);
   const showtimes = showtimeRecords.map(serializeAdminShowtime);
   const todayKey = getDateKey(new Date());
@@ -2791,6 +3077,9 @@ async function buildAdminShowtimeMutationData(
       select: {
         id: true,
         duration: true,
+        status: true,
+        releaseDate: true,
+        endDate: true,
       },
     }),
     prisma.room.findUnique({
@@ -2839,6 +3128,12 @@ async function buildAdminShowtimeMutationData(
 
   if (!startTime) {
     return { error: "Vui lòng nhập thời gian bắt đầu." } as const;
+  }
+
+  if (!isNowShowingMovieInRange(movie, getVietnamDateRange(startTime))) {
+    return {
+      error: "Chỉ có thể tạo hoặc cập nhật suất chiếu cho phim đang chiếu trong ngày đã chọn.",
+    } as const;
   }
 
   const endTime = new Date(
@@ -3521,16 +3816,20 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
   };
 }
 
-async function upsertPaidTicket(params: {
-  bookingId: number;
-  bookingCode: string;
-  showtimeId: number;
-  seatId: number;
-  price: number;
-  index: number;
-}) {
+async function upsertPaidTicket(
+  params: {
+    bookingId: number;
+    bookingCode: string;
+    showtimeId: number;
+    seatId: number;
+    price: number;
+    index: number;
+  },
+  tx?: Prisma.TransactionClient,
+) {
+  const client = tx ?? prisma;
   const ticketCode = `${params.bookingCode}-${params.index + 1}`;
-  const existingTicket = await prisma.ticket.findFirst({
+  const existingTicket = await client.ticket.findFirst({
     where: {
       showtimeId: params.showtimeId,
       seatId: params.seatId,
@@ -3538,7 +3837,7 @@ async function upsertPaidTicket(params: {
   });
 
   if (existingTicket) {
-    await prisma.ticket.update({
+    await client.ticket.update({
       where: {
         id: existingTicket.id,
       },
@@ -3554,7 +3853,7 @@ async function upsertPaidTicket(params: {
     return;
   }
 
-  await prisma.ticket.create({
+  await client.ticket.create({
     data: {
       bookingId: params.bookingId,
       showtimeId: params.showtimeId,
@@ -3668,53 +3967,58 @@ async function handlePayBooking(
 
   const paidAt = new Date();
 
-  if (payment) {
-    await prisma.payment.update({
+  await prisma.$transaction(async (tx) => {
+    if (payment) {
+      await tx.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          method: method as (typeof paymentMethods)[number],
+          status: "SUCCESS",
+          paidAt,
+          paymentUrl: null,
+          transactionCode: payment.transactionCode ?? `${booking.bookingCode}-${method}`,
+        },
+      });
+    } else {
+      await tx.payment.create({
+        data: {
+          bookingId: booking.id,
+          method: method as (typeof paymentMethods)[number],
+          status: "SUCCESS",
+          amount: booking.finalAmount,
+          transactionCode: `${booking.bookingCode}-${method}`,
+          paidAt,
+        },
+      });
+    }
+
+    await tx.booking.update({
       where: {
-        id: payment.id,
+        id: booking.id,
       },
       data: {
-        method: method as (typeof paymentMethods)[number],
-        status: "SUCCESS",
-        paidAt,
-        paymentUrl: null,
-        transactionCode: payment.transactionCode ?? `${booking.bookingCode}-${method}`,
+        status: "CONFIRMED",
       },
     });
-  } else {
-    await prisma.payment.create({
-      data: {
-        bookingId: booking.id,
-        method: method as (typeof paymentMethods)[number],
-        status: "SUCCESS",
-        amount: booking.finalAmount,
-        transactionCode: `${booking.bookingCode}-${method}`,
-        paidAt,
-      },
-    });
-  }
 
-  await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
-    data: {
-      status: "CONFIRMED",
-    },
+    for (let index = 0; index < booking.bookingDetails.length; index += 1) {
+      const detail = booking.bookingDetails[index];
+
+      await upsertPaidTicket(
+        {
+          bookingId: booking.id,
+          bookingCode: booking.bookingCode,
+          showtimeId: detail.showtimeId,
+          seatId: detail.seatId,
+          price: Number(detail.price),
+          index,
+        },
+        tx,
+      );
+    }
   });
-
-  for (let index = 0; index < booking.bookingDetails.length; index += 1) {
-    const detail = booking.bookingDetails[index];
-
-    await upsertPaidTicket({
-      bookingId: booking.id,
-      bookingCode: booking.bookingCode,
-      showtimeId: detail.showtimeId,
-      seatId: detail.seatId,
-      price: Number(detail.price),
-      index,
-    });
-  }
 
   const [updatedBooking] = await fetchUserBookingHistory(user.id).then((bookings) =>
     bookings.filter((item) => item.id === booking.id),
@@ -4676,6 +4980,590 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
   }
 }
 
+type ChatbotAction = {
+  label: string;
+  href: string;
+};
+
+type ChatbotReplyOptions = {
+  suggestions?: string[];
+  actions?: ChatbotAction[];
+};
+
+const chatbotQuestionMaxLength = 700;
+const chatbotListLimit = 5;
+const chatbotDefaultSuggestions = [
+  "Phim nào đang chiếu hôm nay?",
+  "Lịch chiếu ngày mai",
+  "Giá vé hiện tại",
+];
+const chatbotStopWords = new Set([
+  "ai",
+  "admin",
+  "anh",
+  "bao",
+  "ban",
+  "bang",
+  "bao",
+  "cho",
+  "chieu",
+  "cinex",
+  "co",
+  "con",
+  "cua",
+  "dang",
+  "dat",
+  "duoc",
+  "gi",
+  "ghe",
+  "gio",
+  "hay",
+  "hoi",
+  "hom",
+  "khong",
+  "la",
+  "lich",
+  "minh",
+  "muon",
+  "nao",
+  "nay",
+  "ngay",
+  "o",
+  "phim",
+  "rap",
+  "sap",
+  "suat",
+  "tai",
+  "the",
+  "toi",
+  "ve",
+  "vao",
+  "xem",
+]);
+
+function normalizeChatbotText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9\s/-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasChatbotKeyword(normalizedQuestion: string, keywords: string[]) {
+  return keywords.some((keyword) => normalizedQuestion.includes(keyword));
+}
+
+function getChatbotSearchTokens(normalizedQuestion: string) {
+  return [
+    ...new Set(
+      normalizedQuestion
+        .split(/\s+/)
+        .filter((word) => word.length > 1 && !chatbotStopWords.has(word)),
+    ),
+  ];
+}
+
+function matchesChatbotTokens(tokens: string[], values: Array<string | null | undefined>) {
+  if (tokens.length === 0) {
+    return false;
+  }
+
+  const normalizedValue = normalizeChatbotText(values.filter(Boolean).join(" "));
+
+  return tokens.every((token) => normalizedValue.includes(token));
+}
+
+function createChatbotReply(answer: string, options: ChatbotReplyOptions = {}) {
+  return {
+    source: "CINEX_AI_ASSISTANT",
+    generatedAt: new Date().toISOString(),
+    answer,
+    suggestions: options.suggestions ?? chatbotDefaultSuggestions,
+    actions: options.actions ?? [],
+  };
+}
+
+function chatbotQuestionField(body: JsonBody) {
+  const value = body.message ?? body.question;
+
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getChatbotDateKey(normalizedQuestion: string) {
+  if (/\b(hom nay|today)\b/.test(normalizedQuestion)) {
+    return getRelativeDateKey(0);
+  }
+
+  if (/\b(ngay mai|mai|tomorrow)\b/.test(normalizedQuestion)) {
+    return getRelativeDateKey(1);
+  }
+
+  const dateMatch = normalizedQuestion.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+
+  if (!dateMatch) {
+    return null;
+  }
+
+  const day = Number.parseInt(dateMatch[1], 10);
+  const month = Number.parseInt(dateMatch[2], 10);
+  const currentYear = Number.parseInt(getDateKey(new Date()).slice(0, 4), 10);
+  const rawYear = dateMatch[3] ? Number.parseInt(dateMatch[3], 10) : currentYear;
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const dateKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const range = getVietnamDateRangeFromDateKey(dateKey);
+
+  return range ? range.dateKey : null;
+}
+
+function getChatbotAvailableSeats(showtime: Awaited<ReturnType<typeof fetchTicketBookingShowtimes>>[number]) {
+  const reservedSeatIds = new Set<number>();
+
+  for (const bookingDetail of showtime.bookingDetails) {
+    reservedSeatIds.add(bookingDetail.seatId);
+  }
+
+  for (const seatHold of showtime.seatHolds) {
+    reservedSeatIds.add(seatHold.seatId);
+  }
+
+  return showtime.room.seats.filter(
+    (seat) => seat.status === "ACTIVE" && !reservedSeatIds.has(seat.id),
+  ).length;
+}
+
+function formatChatbotShowtime(showtime: Awaited<ReturnType<typeof fetchTicketBookingShowtimes>>[number]) {
+  const availableSeats = getChatbotAvailableSeats(showtime);
+
+  return `- ${timeFormatter.format(showtime.startTime)} ${fullDateFormatter.format(showtime.startTime)}: ${showtime.movie.title} tại ${showtime.room.cinema.name}, ${showtime.room.name}. Giá từ ${formatCurrency(Number(showtime.basePrice))}, còn ${availableSeats}/${showtime.room.totalSeats} ghế.`;
+}
+
+async function answerChatbotShowtimes(normalizedQuestion: string) {
+  const dateKey = getChatbotDateKey(normalizedQuestion);
+  const tokens = getChatbotSearchTokens(normalizedQuestion);
+  const showtimes = await fetchTicketBookingShowtimes();
+  let filteredShowtimes = showtimes;
+
+  if (dateKey) {
+    filteredShowtimes = filteredShowtimes.filter(
+      (showtime) => getDateKey(showtime.startTime) === dateKey,
+    );
+  }
+
+  if (tokens.length > 0) {
+    const matchedShowtimes = filteredShowtimes.filter((showtime) =>
+      matchesChatbotTokens(tokens, [
+        showtime.movie.title,
+        showtime.movie.description,
+        showtime.room.cinema.name,
+        showtime.room.cinema.address,
+        showtime.room.name,
+      ]),
+    );
+
+    if (matchedShowtimes.length > 0) {
+      filteredShowtimes = matchedShowtimes;
+    }
+  }
+
+  const visibleShowtimes = filteredShowtimes.slice(0, chatbotListLimit);
+
+  if (visibleShowtimes.length === 0) {
+    return createChatbotReply(
+      dateKey
+        ? `Mình chưa thấy suất chiếu nào vào ngày ${dateKey}. Bạn có thể thử hỏi "lịch chiếu hôm nay" hoặc xem trang đặt vé.`
+        : "Mình chưa tìm thấy suất chiếu phù hợp. Bạn thử hỏi theo tên phim, tên rạp hoặc ngày chiếu nhé.",
+      {
+        actions: [{ label: "Mở đặt vé", href: "/ticket-booking" }],
+      },
+    );
+  }
+
+  const dateLabel = dateKey ? ` ngày ${dateKey}` : "";
+  const answer = [
+    `Mình tìm thấy ${filteredShowtimes.length} suất chiếu${dateLabel}. Một vài suất gần nhất:`,
+    ...visibleShowtimes.map(formatChatbotShowtime),
+    "Bạn có thể bấm vào trang đặt vé để chọn ghế và thanh toán.",
+  ].join("\n");
+
+  return createChatbotReply(answer, {
+    suggestions: [
+      "Còn ghế cho suất nào?",
+      "Giá vé hiện tại",
+      "Có khuyến mãi không?",
+    ],
+    actions: [{ label: "Đặt vé ngay", href: "/ticket-booking" }],
+  });
+}
+
+async function answerChatbotMovies(status: MovieStatus) {
+  const now = new Date();
+  const movies = (
+    await fetchHomeMovieRecords(now, {
+      status,
+      limit: chatbotListLimit,
+      showtimeStartTime: {
+        gte: getStartOfToday(),
+      },
+    })
+  ).map(serializeHomeMovie);
+  const statusLabel = status === "COMING_SOON" ? "sắp chiếu" : "đang chiếu";
+
+  if (movies.length === 0) {
+    return createChatbotReply(`Hiện CineX chưa có phim ${statusLabel} để hiển thị.`, {
+      actions: [{ label: "Xem phim", href: "/movies/now-showing" }],
+    });
+  }
+
+  const answer = [
+    `Một số phim ${statusLabel} tại CineX:`,
+    ...movies.map((movie) => {
+      const genres = movie.genres.length > 0 ? ` - ${movie.genres.slice(0, 3).join(", ")}` : "";
+      const showtimeHint =
+        movie.showtimeDetails.length > 0
+          ? `, có ${movie.showtimeDetails.length} suất đang mở bán`
+          : "";
+
+      return `- ${movie.title} (${movie.duration}, ${movie.ageRating})${genres}${showtimeHint}.`;
+    }),
+  ].join("\n");
+
+  return createChatbotReply(answer, {
+    suggestions: [
+      "Lịch chiếu hôm nay",
+      "Gợi ý phim hay",
+      "Giá vé hiện tại",
+    ],
+    actions: [
+      {
+        label: status === "COMING_SOON" ? "Xem phim sắp chiếu" : "Xem phim đang chiếu",
+        href: status === "COMING_SOON" ? "/movies/coming-soon" : "/movies/now-showing",
+      },
+    ],
+  });
+}
+
+async function answerChatbotPrice() {
+  const showtimes = await fetchTicketBookingShowtimes();
+  const prices = showtimes
+    .map((showtime) => Number(showtime.basePrice))
+    .filter((price) => Number.isFinite(price) && price > 0);
+
+  if (prices.length === 0) {
+    return createChatbotReply(
+      "Hiện chưa có giá vé từ suất chiếu đang mở bán. Bạn quay lại sau hoặc liên hệ hotline demo ở góc màn hình nhé.",
+    );
+  }
+
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const priceLabel =
+    minPrice === maxPrice
+      ? formatCurrency(minPrice)
+      : `${formatCurrency(minPrice)} - ${formatCurrency(maxPrice)}`;
+
+  return createChatbotReply(
+    `Giá vé hiện tại đang nằm trong khoảng ${priceLabel}. Giá cuối cùng có thể thay đổi theo suất chiếu, loại ghế và mã khuyến mãi bạn áp dụng ở bước thanh toán.`,
+    {
+      suggestions: [
+        "Có khuyến mãi không?",
+        "Lịch chiếu hôm nay",
+        "Cách đặt vé",
+      ],
+      actions: [{ label: "Kiểm tra suất chiếu", href: "/ticket-booking" }],
+    },
+  );
+}
+
+async function answerChatbotCinemas() {
+  const cinemas = await prisma.cinema.findMany({
+    orderBy: {
+      id: "asc",
+    },
+    take: chatbotListLimit,
+    select: {
+      name: true,
+      address: true,
+      city: true,
+      phone: true,
+      email: true,
+    },
+  });
+
+  if (cinemas.length === 0) {
+    return createChatbotReply("CineX chưa có dữ liệu chi nhánh rạp trong hệ thống.");
+  }
+
+  const answer = [
+    "Thông tin rạp CineX hiện có:",
+    ...cinemas.map((cinema) => {
+      const contact = cinema.phone ? ` Hotline: ${cinema.phone}.` : "";
+
+      return `- ${cinema.name}: ${cinema.address}, ${cinema.city}.${contact}`;
+    }),
+    "Nút Zalo và Hotline ở góc màn hình đang để dạng demo theo yêu cầu.",
+  ].join("\n");
+
+  return createChatbotReply(answer, {
+    suggestions: [
+      "Lịch chiếu hôm nay",
+      "Giá vé hiện tại",
+      "Cách đặt vé",
+    ],
+    actions: [{ label: "Xem giới thiệu", href: "/about" }],
+  });
+}
+
+function formatChatbotPromotionDiscount(promotion: Promotion) {
+  if (promotion.type === "PERCENT") {
+    const maxDiscount = promotion.maxDiscount ? `, tối đa ${formatCurrency(Number(promotion.maxDiscount))}` : "";
+
+    return `${promotion.discountPercent ?? 0}%${maxDiscount}`;
+  }
+
+  return formatCurrency(Number(promotion.discountAmount ?? 0));
+}
+
+async function answerChatbotPromotions() {
+  const now = new Date();
+  const promotions = (
+    await prisma.promotion.findMany({
+      where: {
+        isActive: true,
+        startDate: {
+          lte: now,
+        },
+        endDate: {
+          gte: now,
+        },
+      },
+      orderBy: {
+        endDate: "asc",
+      },
+      take: chatbotListLimit * 2,
+    })
+  )
+    .filter((promotion) => promotion.usedQuantity < promotion.quantity)
+    .slice(0, chatbotListLimit);
+
+  if (promotions.length === 0) {
+    return createChatbotReply(
+      "Hiện chưa có mã khuyến mãi còn hiệu lực. Khi có mã mới, bạn có thể nhập ở bước thanh toán để hệ thống tự tính giảm giá.",
+      {
+        actions: [{ label: "Đặt vé", href: "/ticket-booking" }],
+      },
+    );
+  }
+
+  const answer = [
+    "Một số khuyến mãi đang còn hiệu lực:",
+    ...promotions.map((promotion) => {
+      const minOrder = promotion.minOrderAmount
+        ? `, đơn từ ${formatCurrency(Number(promotion.minOrderAmount))}`
+        : "";
+
+      return `- ${promotion.code}: ${promotion.name}, giảm ${formatChatbotPromotionDiscount(promotion)}${minOrder}. Hết hạn ${fullDateFormatter.format(promotion.endDate)}.`;
+    }),
+    "Bạn nhập mã ở bước thanh toán để áp dụng.",
+  ].join("\n");
+
+  return createChatbotReply(answer, {
+    suggestions: [
+      "Giá vé hiện tại",
+      "Cách đặt vé",
+      "Lịch chiếu hôm nay",
+    ],
+    actions: [{ label: "Đặt vé", href: "/ticket-booking" }],
+  });
+}
+
+function answerChatbotBookingGuide() {
+  return createChatbotReply(
+    [
+      "Quy trình đặt vé CineX:",
+      "1. Chọn phim, ngày chiếu, rạp và suất chiếu.",
+      "2. Chọn ghế còn trống trên sơ đồ phòng.",
+      "3. Nhập mã khuyến mãi nếu có.",
+      "4. Thanh toán và kiểm tra vé trong lịch sử đặt vé.",
+      "Nếu gặp lỗi thanh toán, bạn có thể dùng nút Chat AI/Admin để hỏi tiếp hoặc liên hệ hotline demo.",
+    ].join("\n"),
+    {
+      suggestions: [
+        "Lịch chiếu hôm nay",
+        "Có khuyến mãi không?",
+        "Giá vé hiện tại",
+      ],
+      actions: [{ label: "Mở đặt vé", href: "/ticket-booking" }],
+    },
+  );
+}
+
+async function answerChatbotMovieSearch(normalizedQuestion: string) {
+  const tokens = getChatbotSearchTokens(normalizedQuestion);
+  const now = new Date();
+  const movies = (await fetchHomeMovieRecords(now)).map(serializeHomeMovie);
+  const matchedMovies = movies
+    .filter((movie) =>
+      matchesChatbotTokens(tokens, [
+        movie.title,
+        movie.description,
+        movie.director,
+        movie.actors,
+        movie.country,
+        movie.language,
+        ...movie.genres,
+      ]),
+    )
+    .slice(0, 3);
+
+  if (matchedMovies.length === 0) {
+    return createChatbotReply(
+      "Mình chưa có đủ dữ liệu để trả lời câu này. Bạn có thể hỏi về phim đang chiếu, lịch chiếu, giá vé, khuyến mãi, rạp hoặc cách đặt vé.",
+      {
+        suggestions: [
+          "Phim nào đang chiếu?",
+          "Lịch chiếu hôm nay",
+          "Cách đặt vé",
+        ],
+      },
+    );
+  }
+
+  const answer = [
+    "Mình tìm thấy phim phù hợp:",
+    ...matchedMovies.map((movie) => {
+      const showtimeHint =
+        movie.showtimeDetails.length > 0
+          ? ` Có ${movie.showtimeDetails.length} suất đang mở bán.`
+          : "";
+      const genres = movie.genres.length > 0 ? ` Thể loại: ${movie.genres.join(", ")}.` : "";
+
+      return `- ${movie.title}: ${movie.status}, ${movie.duration}, nhãn ${movie.ageRating}.${genres}${showtimeHint}`;
+    }),
+  ].join("\n");
+
+  return createChatbotReply(answer, {
+    suggestions: [
+      "Lịch chiếu phim này",
+      "Giá vé hiện tại",
+      "Đặt vé thế nào?",
+    ],
+    actions: matchedMovies.map((movie) => ({
+      label: movie.title,
+      href: `/movies/${movie.id}`,
+    })),
+  });
+}
+
+async function generateChatbotAnswer(question: string) {
+  const normalizedQuestion = normalizeChatbotText(question);
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "khuyen mai",
+      "giam gia",
+      "voucher",
+      "ma uu dai",
+      "ma ve",
+      "coupon",
+    ])
+  ) {
+    return answerChatbotPromotions();
+  }
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "gia ve",
+      "bao nhieu tien",
+      "gia tien",
+      "ticket price",
+    ])
+  ) {
+    return answerChatbotPrice();
+  }
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "dia chi",
+      "chi nhanh",
+      "hotline",
+      "lien he",
+      "zalo",
+      "rap nao",
+      "rap o dau",
+    ])
+  ) {
+    return answerChatbotCinemas();
+  }
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "dat ve",
+      "thanh toan",
+      "chon ghe",
+      "doi ve",
+      "hoan ve",
+      "lich su dat ve",
+      "dang nhap",
+    ])
+  ) {
+    return answerChatbotBookingGuide();
+  }
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "lich chieu",
+      "suat chieu",
+      "gio chieu",
+      "hom nay",
+      "ngay mai",
+    ])
+  ) {
+    return answerChatbotShowtimes(normalizedQuestion);
+  }
+
+  if (hasChatbotKeyword(normalizedQuestion, ["sap chieu", "coming soon"])) {
+    return answerChatbotMovies("COMING_SOON");
+  }
+
+  if (
+    hasChatbotKeyword(normalizedQuestion, [
+      "dang chieu",
+      "phim nao",
+      "phim gi",
+      "goi y phim",
+      "movie",
+    ])
+  ) {
+    return answerChatbotMovies("NOW_SHOWING");
+  }
+
+  return answerChatbotMovieSearch(normalizedQuestion);
+}
+
+async function handleChatbotQuestion(request: IncomingMessage, response: ServerResponse) {
+  const body = await readJson(request);
+  const question = chatbotQuestionField(body);
+
+  if (!question) {
+    sendJson(response, 400, { message: "Vui lòng nhập câu hỏi cho Chat AI/Admin." });
+    return;
+  }
+
+  if (question.length > chatbotQuestionMaxLength) {
+    sendJson(response, 400, {
+      message: `Câu hỏi tối đa ${chatbotQuestionMaxLength} ký tự.`,
+    });
+    return;
+  }
+
+  const reply = await generateChatbotAnswer(question);
+
+  sendJson(response, 200, reply);
+}
+
 async function handleRequest(request: IncomingMessage, response: ServerResponse) {
   setCorsHeaders(response);
 
@@ -4696,6 +5584,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "GET" && requestUrl.pathname === "/api/home") {
       const homePageData = await loadHomePageData();
       sendJson(response, 200, homePageData);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/chatbot/ask") {
+      await handleChatbotQuestion(request, response);
       return;
     }
 
@@ -4727,6 +5620,23 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "POST" && movieReviewMatch) {
       const movieId = Number.parseInt(movieReviewMatch[1], 10);
       await handleCreateMovieReview(request, response, movieId);
+      return;
+    }
+
+    const movieRecommendationsMatch = requestUrl.pathname.match(
+      /^\/api\/movies\/(\d+)\/recommendations$/,
+    );
+
+    if (request.method === "GET" && movieRecommendationsMatch) {
+      const movieId = Number.parseInt(movieRecommendationsMatch[1], 10);
+      const recommendationData = await loadMovieRecommendationsData(request, movieId);
+
+      if (!recommendationData) {
+        sendJson(response, 404, { message: "Khong tim thay phim." });
+        return;
+      }
+
+      sendJson(response, 200, recommendationData);
       return;
     }
 

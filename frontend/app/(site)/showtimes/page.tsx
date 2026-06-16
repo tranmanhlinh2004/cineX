@@ -39,6 +39,59 @@ const emptyCinemas: TicketBookingOptions["cinemas"] = [];
 const emptyDates: TicketBookingOptions["dates"] = [];
 const emptyShowtimes: TicketBookingOptions["showtimes"] = [];
 
+type WeeklyTicketPriceRow = {
+  day: string;
+  policy: string;
+  price: string;
+  tone: string;
+};
+
+const weeklyTicketPriceRows: WeeklyTicketPriceRow[] = [
+  {
+    day: "Thứ 2",
+    policy: "Đồng giá đầu tuần",
+    price: "85.000đ",
+    tone: "border-cyan-300/25 bg-cyan-300/10 text-cyan-100",
+  },
+  {
+    day: "Thứ 3",
+    policy: "Đồng giá đầu tuần",
+    price: "85.000đ",
+    tone: "border-cyan-300/25 bg-cyan-300/10 text-cyan-100",
+  },
+  {
+    day: "Thứ 4",
+    policy: "Ưu đãi giữa tuần",
+    price: "75.000đ",
+    tone: "border-emerald-300/25 bg-emerald-300/10 text-emerald-100",
+  },
+  {
+    day: "Thứ 5",
+    policy: "Đồng giá cuối tuần sớm",
+    price: "80.000đ",
+    tone: "border-amber-300/25 bg-amber-300/10 text-amber-100",
+  },
+  {
+    day: "Thứ 6",
+    policy: "Đồng giá cuối tuần sớm",
+    price: "80.000đ",
+    tone: "border-amber-300/25 bg-amber-300/10 text-amber-100",
+  },
+  {
+    day: "Thứ 7",
+    policy: "Đồng giá cuối tuần",
+    price: "80.000đ",
+    tone: "border-amber-300/25 bg-amber-300/10 text-amber-100",
+  },
+  {
+    day: "Chủ nhật",
+    policy: "Giá vé Chủ nhật",
+    price: "65.000đ",
+    tone: "border-red-300/25 bg-red-300/10 text-red-100",
+  },
+];
+
+
 const vietnamTimeZone = "Asia/Ho_Chi_Minh";
 const dayFormatter = new Intl.DateTimeFormat("vi-VN", {
   timeZone: vietnamTimeZone,
@@ -488,6 +541,8 @@ export default function ShowtimesPage() {
           </div>
         </section>
 
+        
+
         <section className="mt-6 rounded-lg border border-white/10 bg-[#151719] p-4 shadow-xl sm:p-5">
           <div className="flex gap-2 overflow-x-auto pb-1">
             {dates.map((date) => {
@@ -590,7 +645,7 @@ export default function ShowtimesPage() {
             </button>
           </div>
         </section>
-
+              <WeeklyTicketPriceTable />
         <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_330px]">
           <section>
             <div className="mb-5 flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
@@ -709,6 +764,69 @@ export default function ShowtimesPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function WeeklyTicketPriceTable() {
+  return (
+    <section className="mt-6 overflow-hidden rounded-lg border border-white/10 bg-[#151719] shadow-xl shadow-black/20">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] border-collapse text-left">
+          <caption className="caption-top border-b border-white/10 px-5 py-5 text-left">
+            <span className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                <span className="block text-sm font-bold uppercase text-red-300">
+                  Giá vé CineX
+                </span>
+                <span className="mt-2 block text-2xl font-black text-white sm:text-3xl">
+                  Bảng giá vé xem phim
+                </span>
+              </span>
+              <span className="inline-flex w-fit items-center gap-2 rounded-full bg-white/8 px-4 py-2 text-xs font-black uppercase text-white/70">
+                <BadgePercent size={15} />
+                Từ Thứ 2 đến Chủ nhật
+              </span>
+            </span>
+          </caption>
+          <thead className="bg-white/8 text-sm uppercase text-white/75">
+            <tr>
+              <th scope="col" className="border border-white/10 px-5 py-4 font-black">
+                Ngày
+              </th>
+              <th scope="col" className="border border-white/10 px-5 py-4 font-black">
+                Chính sách
+              </th>
+              <th scope="col" className="border border-white/10 px-5 py-4 text-center font-black">
+                Giá vé
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {weeklyTicketPriceRows.map((row) => (
+              <tr
+                key={row.day}
+                className="transition hover:bg-white/5"
+              >
+                <th
+                  scope="row"
+                  className="border border-white/10 px-5 py-4 text-sm font-black text-white"
+                >
+                  {row.day}
+                </th>
+                <td className="border border-white/10 px-5 py-4 text-sm font-semibold text-white/62">
+                  {row.policy}
+                </td>
+                <td
+                  className={`border border-white/10 px-5 py-4 text-center text-base font-black ${row.tone}`}
+                >
+                  {row.price}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   Users,
   Video,
 } from "lucide-react";
+import MovieRecommendationsSection from "@/components/MovieRecommendationsSection";
 import MovieReviewsSection from "@/components/MovieReviewsSection";
 import type { HomeMovie } from "@/lib/home-movies";
 
@@ -316,6 +317,8 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
           initialReviewCount={movie.reviewCount}
           initialReviews={movie.reviews}
         />
+
+        <MovieRecommendationsSection movieId={movie.id} />
       </section>
     </main>
   );
