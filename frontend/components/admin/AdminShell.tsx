@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
+  BadgePercent,
   Bell,
-  Armchair,
   Building2,
   CalendarClock,
   ChevronDown,
@@ -17,7 +17,6 @@ import {
   Menu,
   Search,
   Settings,
-  ShieldCheck,
   Ticket,
   Users,
   X,
@@ -47,19 +46,46 @@ const adminNavItems: AdminNavItem[] = [
   { label: "Tài khoản", href: "/admin/accounts", icon: Users },
   {
     label: "Quản lý phim",
-    href: "/admin/movies",
+    href: "/admin/movies/now-showing",
     icon: Clapperboard,
     children: [
       { label: "Phim đang chiếu", href: "/admin/movies/now-showing" },
       { label: "Phim sắp chiếu", href: "/admin/movies/coming-soon" },
       { label: "Thể loại phim", href: "/admin/movies/genres" },
+      { label: "Quản lý đánh giá", href: "/admin/movies/reviews" },
     ],
   },
-  { label: "Quản lý rạp", href: "/admin/cinemas", icon: Building2 },
-  { label: "Phòng chiếu", href: "/admin/rooms", icon: Armchair },
-  { label: "Lịch chiếu, giá vé", href: "/admin/showtimes", icon: CalendarClock },
-  { label: "Đặt vé, thanh toán", href: "/admin/bookings", icon: CreditCard },
+  {
+    label: "Quản lý rạp",
+    href: "/admin/cinemas",
+    icon: Building2,
+    children: [
+      { label: "Loại phòng chiếu", href: "/admin/cinemas/room-types" },
+      { label: "Sơ đồ ghế", href: "/admin/cinemas/seat-maps" },
+      { label: "Loại ghế", href: "/admin/cinemas/seat-types" },
+    ],
+  },
+  {
+    label: "Lịch chiếu, suất chiếu",
+    href: "/admin/showtimes",
+    icon: CalendarClock,
+    children: [
+      { label: "Lịch chiếu", href: "/admin/showtimes/schedules" },
+      { label: "Suất chiếu", href: "/admin/showtimes/sessions" },
+    ],
+  },
+  {
+    label: "Quản lý thanh toán",
+    href: "/admin/payments",
+    icon: CreditCard,
+    children: [
+      { label: "Lịch sử giao dịch", href: "/admin/payments/transactions" },
+      { label: "Phê duyệt hoàn tiền", href: "/admin/payments/refund-approvals" },
+      { label: "Xuất hóa đơn", href: "/admin/payments/invoices" },
+    ],
+  },
   { label: "Quản lý vé", href: "/admin/tickets", icon: Ticket },
+  { label: "Khuyến mãi", href: "/admin/promotions", icon: BadgePercent },
   { label: "Thống kê doanh thu", href: "/admin/revenue", icon: CircleDollarSign },
 ];
 
@@ -100,7 +126,7 @@ export default function AdminShell({
 
       setAdminSessionReady(false);
       setMobileMenuOpen(false);
-      router.replace(createLoadingPath("/"));
+      router.replace(createLoadingPath("/login"));
     };
 
     verifyAdminSession();
@@ -122,7 +148,7 @@ export default function AdminShell({
     setAdminSessionReady(false);
     clearAuthUser();
     setMobileMenuOpen(false);
-    router.replace(createLoadingPath("/"));
+    router.replace(createLoadingPath("/login"));
   };
 
   const openNavItems =
@@ -259,15 +285,6 @@ export default function AdminShell({
           </p>
           <div className="mt-3">{navList}</div>
 
-          <div className="mt-6 rounded-md border border-red-100 bg-red-50 p-4">
-            <div className="flex items-center gap-2 text-sm font-black text-red-700">
-              <ShieldCheck size={17} />
-              Trực hệ thống
-            </div>
-            <p className="mt-2 text-sm leading-6 text-red-900/70">
-              3 cụm rạp đang mở bán vé. 1 cụm cần cập nhật lịch chiếu trong ngày.
-            </p>
-          </div>
         </div>
 
         <div className="border-t border-slate-200 p-4">

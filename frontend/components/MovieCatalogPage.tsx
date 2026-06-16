@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
 import {
   Bell,
@@ -17,6 +18,7 @@ import {
   Ticket,
   X,
 } from "lucide-react";
+import CalendarDatePicker from "@/components/CalendarDatePicker";
 import type { HomeMovie, MovieCatalogPagination } from "@/lib/home-movies";
 
 type MovieCatalogPageProps = {
@@ -24,6 +26,7 @@ type MovieCatalogPageProps = {
   pagination?: MovieCatalogPagination;
   variant: "now" | "soon";
   error?: string;
+  date?: string;
 };
 
 const allOption = "Tất cả";
@@ -89,10 +92,25 @@ function getCatalogPath(variant: "now" | "soon") {
   return variant === "now" ? "/movies/now-showing" : "/movies/coming-soon";
 }
 
-function getCatalogPageHref(variant: "now" | "soon", page: number) {
+function getCatalogPageHref(
+  variant: "now" | "soon",
+  page: number,
+  date?: string,
+) {
   const path = getCatalogPath(variant);
+  const searchParams = new URLSearchParams();
 
-  return page <= 1 ? path : `${path}?page=${page}`;
+  if (date) {
+    searchParams.set("date", date);
+  }
+
+  if (page > 1) {
+    searchParams.set("page", String(page));
+  }
+
+  const query = searchParams.toString();
+
+  return query ? `${path}?${query}` : path;
 }
 
 function getPaginationItems(currentPage: number, totalPages: number) {
@@ -131,11 +149,14 @@ export default function MovieCatalogPage({
   pagination,
   variant,
   error,
+  date,
 }: MovieCatalogPageProps) {
+  const router = useRouter();
   const styles = variantConfig[variant];
   const featuredMovie = movies[0];
   const totalMovieCount = pagination?.totalItems ?? movies.length;
   const currentPage = pagination?.page ?? 1;
+  const catalogDate = date ?? "";
   const [selectedGenre, setSelectedGenre] = useState(allOption);
   const [selectedLanguage, setSelectedLanguage] = useState(allOption);
   const [selectedMonth, setSelectedMonth] = useState(allOption);
@@ -191,6 +212,14 @@ export default function MovieCatalogPage({
     setSelectedLanguage(allOption);
     setSelectedMonth(allOption);
     setQuery("");
+
+    if (catalogDate) {
+      router.push(getCatalogPageHref(variant, 1));
+    }
+  };
+
+  const updateDateFilter = (nextDate: string) => {
+    router.push(getCatalogPageHref(variant, 1, nextDate || undefined));
   };
 
   return (
@@ -208,7 +237,16 @@ export default function MovieCatalogPage({
 
         <section className="mt-8 rounded-lg border border-white/10 bg-[#151719] p-4 shadow-xl sm:p-5">
           <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <CalendarDatePicker
+                label={variant === "now" ? "Ngày chiếu" : "Ngày khởi chiếu"}
+                value={catalogDate}
+                onChange={updateDateFilter}
+                theme="dark"
+                accent={variant === "now" ? "red" : "cyan"}
+                placeholder="Chọn ngày"
+              />
+
               {variant === "soon" ? (
                 <FilterSelect
                   label="Tháng khởi chiếu"
@@ -312,7 +350,11 @@ export default function MovieCatalogPage({
           )}
 
           {pagination ? (
-            <PaginationControls pagination={pagination} variant={variant} />
+            <PaginationControls
+              pagination={pagination}
+              variant={variant}
+              date={catalogDate || undefined}
+            />
           ) : null}
         </section>
       </section>
@@ -432,9 +474,11 @@ function HeroMovie({
 function PaginationControls({
   pagination,
   variant,
+  date,
 }: {
   pagination: MovieCatalogPagination;
   variant: "now" | "soon";
+  date?: string;
 }) {
   if (pagination.totalPages <= 1) {
     return null;
@@ -455,6 +499,7 @@ function PaginationControls({
         <PaginationLink
           page={pagination.page - 1}
           variant={variant}
+          date={date}
           disabled={!pagination.hasPreviousPage}
         >
           <ChevronLeft size={16} />
@@ -474,6 +519,7 @@ function PaginationControls({
               key={item}
               page={item}
               variant={variant}
+              date={date}
               active={item === pagination.page}
             >
               {item}
@@ -484,6 +530,7 @@ function PaginationControls({
         <PaginationLink
           page={pagination.page + 1}
           variant={variant}
+          date={date}
           disabled={!pagination.hasNextPage}
         >
           Sau
@@ -497,12 +544,14 @@ function PaginationControls({
 function PaginationLink({
   page,
   variant,
+  date,
   active,
   disabled,
   children,
 }: {
   page: number;
   variant: "now" | "soon";
+  date?: string;
   active?: boolean;
   disabled?: boolean;
   children: ReactNode;
@@ -528,7 +577,7 @@ function PaginationLink({
 
   return (
     <Link
-      href={getCatalogPageHref(variant, page)}
+      href={getCatalogPageHref(variant, page, date)}
       aria-current={active ? "page" : undefined}
       className={className}
     >

@@ -1,11 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
-  CalendarDays,
-  ChevronLeft,
-  ChevronRight,
   ImagePlus,
   Clock3,
   Globe2,
@@ -14,82 +12,100 @@ import {
   ShieldAlert,
   Video,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
-import type { AdminMovie } from "@/app/(admin)/admin/movies/movie-data";
+import { useEffect, useId, useState, type FormEvent } from "react";
+import CalendarDatePicker from "@/components/CalendarDatePicker";
+import {
+  createAdminMovie,
+  getAdminMovie,
+  updateAdminMovie,
+  uploadAdminMovieImage,
+  type AdminMoviePayload,
+  type AdminMovieRecord,
+  type AdminMovieStatusCode,
+} from "@/lib/admin-movies-api";
 
 type MovieFormPageProps = {
   mode: "create" | "edit";
-  movie?: AdminMovie;
+  movieId?: string;
+  movie?: AdminMovieRecord;
 };
 
 const inputClass =
   "h-12 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100";
 const labelClass = "grid gap-2 text-sm font-bold text-slate-700";
-const weekDayLabels = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+const genreOptions = [
+  "Hành động",
+  "Hoạt hình",
+  "Khoa học viễn tưởng",
+  "Kinh dị",
+  "Tâm lý",
+  "Tình cảm",
+  "Hài",
+  "Gia đình",
+  "Phiêu lưu",
+  "Anime",
+];
+const statusOptions: Array<{ value: AdminMovieStatusCode; label: string }> = [
+  { value: "NOW_SHOWING", label: "Đang chiếu" },
+  { value: "COMING_SOON", label: "Sắp chiếu" },
+  { value: "ENDED", label: "Ngừng chiếu" },
+];
 
-function padDatePart(value: number) {
-  return String(value).padStart(2, "0");
-}
+const adminMoviesFallbackPath = "/admin/movies/now-showing";
 
-function formatMovieDate(date: Date) {
-  return `${padDatePart(date.getDate())}/${padDatePart(
-    date.getMonth() + 1,
-  )}/${date.getFullYear()}`;
-}
-
-function parseMovieDate(value?: string) {
-  if (!value) {
-    return null;
+function getAdminMovieListPath(statusCode?: AdminMovieStatusCode) {
+  if (statusCode === "COMING_SOON") {
+    return "/admin/movies/coming-soon";
   }
 
-  const displayMatch = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-
-  const day = displayMatch ? Number(displayMatch[1]) : Number(isoMatch?.[3]);
-  const month = displayMatch ? Number(displayMatch[2]) : Number(isoMatch?.[2]);
-  const year = displayMatch ? Number(displayMatch[3]) : Number(isoMatch?.[1]);
-
-  if (!day || !month || !year) {
-    return null;
-  }
-
-  const date = new Date(year, month - 1, day);
-
-  if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
+  return adminMoviesFallbackPath;
 }
 
-function isSameCalendarDate(first: Date | null, second: Date | null) {
-  return Boolean(
-    first &&
-      second &&
-      first.getFullYear() === second.getFullYear() &&
-      first.getMonth() === second.getMonth() &&
-      first.getDate() === second.getDate(),
+function getFormString(formData: FormData, key: string) {
+  const value = formData.get(key);
+
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getFormFile(formData: FormData, key: string) {
+  const value = formData.get(key);
+
+  return value instanceof File && value.size > 0 ? value : null;
+}
+
+function getStatusCode(value: string): AdminMovieStatusCode {
+  if (value === "NOW_SHOWING" || value === "COMING_SOON" || value === "ENDED") {
+    return value;
+  }
+
+  return "COMING_SOON";
+}
+
+function buildMoviePayload(formData: FormData): AdminMoviePayload {
+  const genre = getFormString(formData, "genre");
+  const durationMinutes = Number.parseInt(
+    getFormString(formData, "duration").replace(/[^\d]/g, ""),
+    10,
   );
-}
 
-function getCalendarDays(viewDate: Date) {
-  const year = viewDate.getFullYear();
-  const month = viewDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const mondayBasedOffset = (firstDay.getDay() + 6) % 7;
-
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(year, month, index - mondayBasedOffset + 1);
-
-    return {
-      date,
-      currentMonth: date.getMonth() === month,
-    };
-  });
+  return {
+    title: getFormString(formData, "title"),
+    genre,
+    genres: genre ? [genre] : [],
+    description: getFormString(formData, "description"),
+    trailerUrl: getFormString(formData, "trailerUrl"),
+    durationMinutes: Number.isFinite(durationMinutes) ? durationMinutes : 0,
+    country: getFormString(formData, "country"),
+    ageRating: getFormString(formData, "ageRating"),
+    language: getFormString(formData, "language"),
+    releaseDate: getFormString(formData, "releaseDate"),
+    endDate: getFormString(formData, "endDate"),
+    statusCode: getStatusCode(getFormString(formData, "statusCode")),
+    director: getFormString(formData, "director"),
+    actors: getFormString(formData, "actors"),
+    posterUrl: getFormString(formData, "posterUrl"),
+    bannerUrl: getFormString(formData, "bannerUrl"),
+  };
 }
 
 function MovieDatePicker({
@@ -99,208 +115,161 @@ function MovieDatePicker({
   name: string;
   initialValue?: string;
 }) {
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(() =>
-    parseMovieDate(initialValue),
-  );
-  const [viewDate, setViewDate] = useState(() => {
-    const initialDate = parseMovieDate(initialValue) ?? new Date();
-
-    return new Date(initialDate.getFullYear(), initialDate.getMonth(), 1);
-  });
-  const displayValue = selectedDate ? formatMovieDate(selectedDate) : "";
-  const today = new Date();
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target;
-
-      if (!(target instanceof Node) || pickerRef.current?.contains(target)) {
-        return;
-      }
-
-      setOpen(false);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  const moveMonth = (offset: number) => {
-    setViewDate(
-      (current) => new Date(current.getFullYear(), current.getMonth() + offset, 1),
-    );
-  };
-
-  const selectDate = (date: Date) => {
-    setSelectedDate(date);
-    setViewDate(new Date(date.getFullYear(), date.getMonth(), 1));
-    setOpen(false);
-  };
-
   return (
-    <div ref={pickerRef} className="relative">
-      <input type="hidden" name={name} value={displayValue} />
-      <button
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className={`${inputClass} relative flex cursor-pointer items-center pl-10 text-left`}
-      >
-        <CalendarDays
-          size={17}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-        />
-        <span className={displayValue ? "text-slate-900" : "text-slate-400"}>
-          {displayValue || "dd/mm/yyyy"}
-        </span>
-      </button>
-
-      {open ? (
-        <div
-          role="dialog"
-          aria-label="Chon ngay"
-          className="absolute left-0 top-full z-30 mt-2 w-full min-w-72 rounded-md border border-slate-200 bg-white p-3 shadow-xl"
-        >
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              aria-label="Thang truoc"
-              onClick={() => moveMonth(-1)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-            >
-              <ChevronLeft size={17} />
-            </button>
-
-            <select
-              aria-label="Chon thang"
-              value={viewDate.getMonth()}
-              onChange={(event) =>
-                setViewDate(
-                  new Date(viewDate.getFullYear(), Number(event.target.value), 1),
-                )
-              }
-              className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm font-black text-slate-800 outline-none focus:border-red-500"
-            >
-              {Array.from({ length: 12 }, (_, index) => (
-                <option key={index} value={index}>
-                  Tháng {index + 1}
-                </option>
-              ))}
-            </select>
-
-            <input
-              aria-label="Chon nam"
-              type="number"
-              min={1900}
-              max={2100}
-              value={viewDate.getFullYear()}
-              onChange={(event) => {
-                const year = event.target.valueAsNumber;
-
-                if (Number.isNaN(year)) {
-                  return;
-                }
-
-                setViewDate(new Date(year, viewDate.getMonth(), 1));
-              }}
-              className="h-9 w-20 rounded-md border border-slate-200 bg-white px-2 text-sm font-black text-slate-800 outline-none focus:border-red-500"
-            />
-
-            <button
-              type="button"
-              aria-label="Thang sau"
-              onClick={() => moveMonth(1)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-            >
-              <ChevronRight size={17} />
-            </button>
-          </div>
-
-          <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-black uppercase text-slate-400">
-            {weekDayLabels.map((label) => (
-              <span key={label} className="py-1">
-                {label}
-              </span>
-            ))}
-          </div>
-
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {getCalendarDays(viewDate).map(({ date, currentMonth }) => {
-              const selected = isSameCalendarDate(date, selectedDate);
-              const currentDay = isSameCalendarDate(date, today);
-
-              return (
-                <button
-                  key={formatMovieDate(date)}
-                  type="button"
-                  aria-label={`Chon ngay ${formatMovieDate(date)}`}
-                  aria-pressed={selected}
-                  onClick={() => selectDate(date)}
-                  className={`flex aspect-square min-h-9 items-center justify-center rounded-md text-sm font-black transition ${
-                    selected
-                      ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
-                      : currentMonth
-                        ? "text-slate-800 hover:bg-red-50 hover:text-red-700"
-                        : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"
-                  } ${currentDay && !selected ? "ring-1 ring-red-200" : ""}`}
-                >
-                  {date.getDate()}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-            <button
-              type="button"
-              onClick={() => selectDate(today)}
-              className="rounded-md px-2 py-1.5 text-xs font-black text-red-600 transition hover:bg-red-50"
-            >
-              Hôm nay
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedDate(null);
-                setOpen(false);
-              }}
-              className="rounded-md px-2 py-1.5 text-xs font-black text-slate-500 transition hover:bg-slate-50 hover:text-slate-950"
-            >
-              Xóa
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <CalendarDatePicker
+      name={name}
+      defaultValue={initialValue}
+      outputFormat="display"
+      placeholder="dd/mm/yyyy"
+      theme="light"
+      accent="red"
+      buttonClassName={`${inputClass} pl-10 pr-10 text-left`}
+    />
   );
 }
 
-export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
+export default function MovieFormPage({ mode, movieId, movie }: MovieFormPageProps) {
+  const router = useRouter();
   const isEdit = mode === "edit";
+  const [loadedMovie, setLoadedMovie] = useState<AdminMovieRecord | null>(
+    movie ?? null,
+  );
+  const [movieLoading, setMovieLoading] = useState(isEdit && !movie);
+  const [movieLoadError, setMovieLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isEdit || movie || !movieId) {
+      return;
+    }
+
+    const currentMovieId = movieId;
+    let cancelled = false;
+
+    async function loadMovie() {
+      setMovieLoading(true);
+      setMovieLoadError("");
+
+      try {
+        const data = await getAdminMovie(currentMovieId);
+
+        if (!cancelled) {
+          setLoadedMovie(data.movie);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMovieLoadError(
+            error instanceof Error
+              ? error.message
+              : "Không thể tải dữ liệu phim từ database.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setMovieLoading(false);
+        }
+      }
+    }
+
+    void loadMovie();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isEdit, movie, movieId]);
+
+  const currentMovie = isEdit ? loadedMovie : null;
+  const movieListPath = getAdminMovieListPath(currentMovie?.statusCode);
+  const primaryGenre = currentMovie?.genres[0] ?? "";
+
+  const saveMovie = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setActionError("");
+
+    const formData = new FormData(event.currentTarget);
+    const payload = buildMoviePayload(formData);
+    const posterFile = getFormFile(formData, "posterFile");
+    const bannerFile = getFormFile(formData, "bannerFile");
+
+    if (!payload.title) {
+      setActionError("Vui lòng nhập tên phim.");
+      return;
+    }
+
+    if (!payload.durationMinutes) {
+      setActionError("Vui lòng nhập thời lượng phim hợp lệ.");
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const [posterUpload, bannerUpload] = await Promise.all([
+        posterFile ? uploadAdminMovieImage("poster", posterFile) : null,
+        bannerFile ? uploadAdminMovieImage("banner", bannerFile) : null,
+      ]);
+
+      if (posterUpload) {
+        payload.posterUrl = posterUpload.url;
+      }
+
+      if (bannerUpload) {
+        payload.bannerUrl = bannerUpload.url;
+      }
+
+      const result =
+        isEdit && (currentMovie || movieId)
+          ? await updateAdminMovie(currentMovie?.id ?? movieId ?? "", payload)
+          : await createAdminMovie(payload);
+
+      router.push(`/admin/movies/${result.movie.id}`);
+      router.refresh();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Không thể lưu phim vào database.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (movieLoading) {
+    return (
+      <div className="mx-auto grid max-w-[1440px] gap-6">
+        <section className="rounded-md border border-slate-200 bg-white p-6 text-sm font-bold text-slate-500 shadow-sm">
+          Đang tải dữ liệu phim từ database...
+        </section>
+      </div>
+    );
+  }
+
+  if (isEdit && movieLoadError) {
+    return (
+      <div className="mx-auto grid max-w-[1440px] gap-6">
+        <Link
+          href={movieListPath}
+          className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+        >
+          <ArrowLeft size={17} />
+          Quay lại danh sách phim
+        </Link>
+        <section className="rounded-md border border-red-200 bg-red-50 p-6 text-sm font-bold text-red-700">
+          {movieLoadError}
+        </section>
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto grid max-w-[1440px] gap-6">
+    <form
+      key={currentMovie?.id ?? "create-movie"}
+      onSubmit={saveMovie}
+      className="mx-auto grid max-w-[1440px] gap-6"
+    >
       <section className="flex items-start gap-4">
         <Link
-          href="/admin/movies"
+          href={movieListPath}
           aria-label="Quay lại danh sách phim"
           className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50"
         >
@@ -316,6 +285,12 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
         </div>
       </section>
 
+      {actionError ? (
+        <section className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+          {actionError}
+        </section>
+      ) : null}
+
       <section className="rounded-md border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-black text-slate-950">Thông tin cơ bản</h3>
 
@@ -323,7 +298,8 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
           <label className={labelClass}>
             Tên phim
             <input
-              defaultValue={movie?.title}
+              name="title"
+              defaultValue={currentMovie?.title}
               placeholder="Nhập tên phim"
               className={inputClass}
             />
@@ -331,13 +307,17 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
 
           <label className={labelClass}>
             Thể loại
-            <select defaultValue={movie?.genre ?? ""} className={inputClass}>
+            <select
+              name="genre"
+              defaultValue={primaryGenre}
+              className={inputClass}
+            >
               <option value="">Chọn thể loại</option>
-              <option>Hành động</option>
-              <option>Hoạt hình</option>
-              <option>Khoa học viễn tưởng</option>
-              <option>Kinh dị</option>
-              <option>Tâm lý gia đình</option>
+              {genreOptions.map((genre) => (
+                <option key={genre} value={genre}>
+                  {genre}
+                </option>
+              ))}
             </select>
           </label>
         </div>
@@ -345,22 +325,24 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
         <label className={`${labelClass} mt-5`}>
           Mô tả phim
           <textarea
-            defaultValue={movie?.description}
+            name="description"
+            defaultValue={currentMovie?.description}
             placeholder="Nhập mô tả phim, nội dung tóm tắt, điểm nổi bật..."
             className="min-h-32 w-full rounded-md border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100"
           />
         </label>
 
         <label className={`${labelClass} mt-5`}>
-          Trailer phim hoặc video review (tùy chọn)
+          Trailer phim hoặc video review
           <span className="relative">
             <Video
               size={17}
               className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
             />
             <input
-              defaultValue={movie?.trailerUrl}
-              placeholder="https://... (YouTube, TikTok hoặc link video trực tiếp)"
+              name="trailerUrl"
+              defaultValue={currentMovie?.trailerUrl}
+              placeholder="https://... YouTube hoặc link video"
               className={`${inputClass} pl-10`}
             />
           </span>
@@ -381,8 +363,9 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
               <input
-                defaultValue={movie?.duration}
-                placeholder="120 phút"
+                name="duration"
+                defaultValue={currentMovie?.durationMinutes}
+                placeholder="120"
                 className={`${inputClass} pl-10`}
               />
             </span>
@@ -396,7 +379,8 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
               <input
-                defaultValue={movie?.country}
+                name="country"
+                defaultValue={currentMovie?.country}
                 placeholder="Việt Nam"
                 className={`${inputClass} pl-10`}
               />
@@ -410,7 +394,11 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
                 size={17}
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
-              <select defaultValue={movie?.ageRating ?? ""} className={`${inputClass} pl-10`}>
+              <select
+                name="ageRating"
+                defaultValue={currentMovie?.ageRating ?? ""}
+                className={`${inputClass} pl-10`}
+              >
                 <option value="">Chọn độ tuổi</option>
                 <option>P</option>
                 <option>K</option>
@@ -424,7 +412,8 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
           <label className={labelClass}>
             Ngôn ngữ
             <input
-              defaultValue={movie?.language}
+              name="language"
+              defaultValue={currentMovie?.language}
               placeholder="Phụ đề Việt"
               className={inputClass}
             />
@@ -442,45 +431,61 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
             Ngày khởi chiếu
             <MovieDatePicker
               name="releaseDate"
-              initialValue={movie?.releaseDate}
+              initialValue={currentMovie?.releaseDate}
             />
           </div>
 
           <div className={labelClass}>
             Ngày kết thúc dự kiến
-            <MovieDatePicker
-              name="endDate"
-              initialValue={movie?.endDate}
-            />
+            <MovieDatePicker name="endDate" initialValue={currentMovie?.endDate} />
           </div>
 
           <label className={labelClass}>
             Trạng thái
-            <select defaultValue={movie?.status ?? "Đang hoạt động"} className={inputClass}>
-              <option>Đang hoạt động</option>
-              <option>Sắp chiếu</option>
-              <option>Tạm dừng</option>
-              <option>Ngừng chiếu</option>
+            <select
+              name="statusCode"
+              defaultValue={currentMovie?.statusCode ?? "NOW_SHOWING"}
+              className={inputClass}
+            >
+              {statusOptions.map((status) => (
+                <option key={status.value} value={status.value}>
+                  {status.label}
+                </option>
+              ))}
             </select>
           </label>
 
           <label className={labelClass}>
             Đạo diễn
             <input
-              defaultValue={movie?.director}
+              name="director"
+              defaultValue={currentMovie?.director}
               placeholder="Tên đạo diễn"
               className={inputClass}
             />
           </label>
         </div>
 
+        <label className={`${labelClass} mt-5`}>
+          Diễn viên
+          <input
+            name="actors"
+            defaultValue={currentMovie?.actors}
+            placeholder="Tên diễn viên, phân tách bằng dấu phẩy"
+            className={inputClass}
+          />
+        </label>
       </section>
 
       <section className="rounded-md border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-black text-slate-950">Hình ảnh hiển thị</h3>
+        <p className="hidden">
+          Link poster và banner sẽ được lưu vào database. Upload từ máy tính chỉ
+          dùng để xem thử ảnh tại trình duyệt.
+        </p>
+
         <p className="mt-1 text-sm leading-6 text-slate-500">
-          Chọn ảnh từ máy tính để thay đổi poster và banner phim. Ảnh đang được
-          preview tại trình duyệt, chưa upload lên server.
+          Chọn ảnh từ máy tính, hệ thống sẽ upload và lưu đường dẫn ảnh khi lưu phim.
         </p>
 
         <div className="mt-6 grid gap-5 lg:grid-cols-[320px_1fr]">
@@ -488,7 +493,7 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
             name="posterFile"
             label="Poster phim"
             description="Khuyến nghị ảnh dọc tỷ lệ 2:3."
-            initialImage={movie?.poster}
+            initialImage={currentMovie?.poster}
             previewClassName="aspect-[2/3]"
           />
 
@@ -496,61 +501,44 @@ export default function MovieFormPage({ mode, movie }: MovieFormPageProps) {
             name="bannerFile"
             label="Banner phim"
             description="Khuyến nghị ảnh ngang tỷ lệ 16:9 hoặc 21:9."
-            initialImage={movie?.banner}
+            initialImage={currentMovie?.banner}
             previewClassName="aspect-[16/7]"
           />
         </div>
 
-        <div className="mt-5 grid gap-5 lg:grid-cols-2">
-          <label className={labelClass}>
-            Link poster hiện tại
-            <span className="relative">
-              <ImageIcon
-                size={17}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                defaultValue={movie?.poster}
-                placeholder="https://... poster phim"
-                className={`${inputClass} pl-10`}
-              />
-            </span>
-          </label>
-
-          <label className={labelClass}>
-            Link banner hiện tại
-            <span className="relative">
-              <ImageIcon
-                size={17}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                defaultValue={movie?.banner}
-                placeholder="https://... banner phim"
-                className={`${inputClass} pl-10`}
-              />
-            </span>
-          </label>
-        </div>
+        <input
+          type="hidden"
+          name="posterUrl"
+          defaultValue={currentMovie?.posterUrl || currentMovie?.poster}
+        />
+        <input
+          type="hidden"
+          name="bannerUrl"
+          defaultValue={currentMovie?.bannerUrl || currentMovie?.banner}
+        />
       </section>
 
       <section className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
         <Link
-          href="/admin/movies"
+          href={movieListPath}
           className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-200 bg-white px-5 text-sm font-black text-slate-700 transition hover:bg-slate-50"
         >
           Hủy
         </Link>
         <button
-          type="button"
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700"
+          type="submit"
+          disabled={isSaving}
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
         >
           <Save size={17} />
-          {isEdit ? "Lưu thay đổi" : "Tạo phim mới"}
+          {isSaving
+            ? "Đang lưu..."
+            : isEdit
+              ? "Lưu thay đổi"
+              : "Tạo phim mới"}
         </button>
       </section>
-
-    </div>
+    </form>
   );
 }
 

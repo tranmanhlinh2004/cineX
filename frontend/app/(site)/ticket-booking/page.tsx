@@ -22,10 +22,12 @@ import { useEffect, useMemo, useState } from "react";
 import { getAuthToken } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
 import {
+  applyTicketBookingPromotion,
   createTicketBooking,
   getTicketBookingOptions,
   getTicketBookingSeatMap,
   type TicketBookingOptions,
+  type TicketBookingPromotionPreview,
   type TicketBookingSeat,
   type TicketBookingSeatMap,
   type TicketBookingShowtime,
@@ -92,6 +94,12 @@ export default function TicketBookingPage() {
   const [isLoadingSeats, setIsLoadingSeats] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [isCounterSale, setIsCounterSale] = useState(false);
+  const [promotionCode, setPromotionCode] = useState("");
+  const [appliedPromotion, setAppliedPromotion] =
+    useState<TicketBookingPromotionPreview | null>(null);
+  const [promotionNotice, setPromotionNotice] = useState<Notice | null>(null);
+  const [isApplyingPromotion, setIsApplyingPromotion] = useState(false);
 
   const movies = options?.movies ?? emptyMovies;
   const cinemas = options?.cinemas ?? emptyCinemas;
@@ -137,8 +145,29 @@ export default function TicketBookingPage() {
     [seatMap, selectedSeatIds],
   );
 
+  const selectedSeatSummary =
+    selectedSeats.length > 0
+      ? selectedSeats
+          .map((seat) => `${seat.seatCode} (${seat.type.label.toLocaleLowerCase("vi-VN")})`)
+          .join(", ")
+      : "Chưa chọn ghế";
   const seatSubtotal = selectedSeats.reduce((total, seat) => total + seat.price, 0);
-  const canSubmit = Boolean(selectedShowtimeId && selectedSeatIds.length > 0 && !isSubmitting);
+  const promotionDiscount = appliedPromotion?.discountAmount ?? 0;
+  const orderTotal = Math.max(seatSubtotal - promotionDiscount, 0);
+  const canApplyPromotion = Boolean(
+    promotionCode.trim() && seatSubtotal > 0 && !isApplyingPromotion,
+  );
+  const canSubmit = Boolean(
+    selectedShowtimeId &&
+      selectedSeatIds.length > 0 &&
+      !isSubmitting &&
+      !isApplyingPromotion,
+  );
+
+  const clearAppliedPromotion = () => {
+    setAppliedPromotion(null);
+    setPromotionNotice(null);
+  };
 
   const loadSeatMap = async (showtimeId: number) => {
     setIsLoadingSeats(true);
@@ -168,6 +197,7 @@ export default function TicketBookingPage() {
     setSelectedMovieId(showtime.movieId);
     setSelectedShowtimeId(showtime.id);
     setSelectedSeatIds([]);
+    clearAppliedPromotion();
     void loadSeatMap(showtime.id);
   };
 
@@ -196,10 +226,12 @@ export default function TicketBookingPage() {
     setNotice(null);
 
     try {
+      const params = new URLSearchParams(window.location.search);
       const data = await getTicketBookingOptions();
       const initialShowtime = findInitialShowtime(data);
       const paymentMethods = getTicketBookingPaymentMethods(data.paymentMethods);
 
+      setIsCounterSale(params.get("source") === "admin-counter");
       setOptions(data);
       setSelectedPaymentMethod(paymentMethods[0] ?? defaultPaymentMethod);
 
@@ -261,6 +293,7 @@ export default function TicketBookingPage() {
     setSelectedCinemaSlug(filter.cinemaSlug);
     setSelectedMovieId(filter.movieId);
     setSelectedSeatIds([]);
+    clearAppliedPromotion();
 
     if (nextShowtime) {
       setSelectedShowtimeId(nextShowtime.id);
@@ -277,11 +310,75 @@ export default function TicketBookingPage() {
       return;
     }
 
+    clearAppliedPromotion();
     setSelectedSeatIds((currentSeats) =>
       currentSeats.includes(seat.id)
         ? currentSeats.filter((seatId) => seatId !== seat.id)
         : [...currentSeats, seat.id],
     );
+  };
+
+  const handlePromotionCodeChange = (value: string) => {
+    const nextCode = value.toUpperCase();
+    const normalizedCode = nextCode.trim();
+
+    setPromotionCode(nextCode);
+
+    if (appliedPromotion && appliedPromotion.code !== normalizedCode) {
+      setAppliedPromotion(null);
+    }
+
+    if (promotionNotice) {
+      setPromotionNotice(null);
+    }
+  };
+
+  const handleApplyPromotion = async () => {
+    const code = promotionCode.trim().toUpperCase();
+
+    if (!code) {
+      setPromotionNotice({
+        type: "error",
+        text: "Vui lòng nhập mã giảm giá.",
+      });
+      return;
+    }
+
+    if (seatSubtotal <= 0) {
+      setPromotionNotice({
+        type: "error",
+        text: "Vui lòng chọn ghế trước khi áp dụng mã giảm giá.",
+      });
+      return;
+    }
+
+    setIsApplyingPromotion(true);
+    setPromotionNotice(null);
+
+    try {
+      const promotion = await applyTicketBookingPromotion({
+        code,
+        totalAmount: seatSubtotal,
+      });
+
+      setAppliedPromotion(promotion);
+      setPromotionCode(promotion.code);
+      setPromotionNotice({
+        type: "success",
+        text: promotion.message,
+      });
+    } catch (error) {
+      setAppliedPromotion(null);
+      setPromotionNotice({
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Không thể áp dụng mã giảm giá.",
+      });
+    } finally {
+      setIsApplyingPromotion(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -306,13 +403,14 @@ export default function TicketBookingPage() {
         showtimeId: selectedShowtimeId,
         seatIds: selectedSeatIds,
         paymentMethod: selectedPaymentMethod,
+        promotionCode: appliedPromotion?.code,
       });
 
       setNotice({
         type: "success",
         text: result.message,
       });
-      router.push(createLoadingPath("/account/booking"));
+      router.push(createLoadingPath(isCounterSale ? "/admin/bookings" : "/account/booking"));
     } catch (error) {
       setNotice({
         type: "error",
@@ -612,19 +710,14 @@ export default function TicketBookingPage() {
                                   type="button"
                                   disabled={!seat.isAvailable}
                                   aria-pressed={selected}
-                                  title={seat.unavailableReason ?? seat.priceLabel}
+                                  aria-label={`${seat.seatCode} - ${seat.statusLabel}`}
+                                  title={
+                                    seat.isAvailable
+                                      ? `${seat.seatCode} - ${seat.type.label} - ${seat.priceLabel}`
+                                      : `${seat.seatCode} - ${seat.statusLabel}`
+                                  }
                                   onClick={() => toggleSeat(seat)}
-                                  className={`h-10 rounded-md border text-xs font-black transition ${
-                                    !seat.isAvailable
-                                      ? "cursor-not-allowed border-white/5 bg-white/5 text-white/20"
-                                      : selected
-                                        ? "border-red-300 bg-red-600 text-white shadow-lg shadow-red-950/40"
-                                        : seat.type.name === "VIP"
-                                          ? "border-amber-300/35 bg-amber-300/12 text-amber-100 hover:bg-amber-300/22"
-                                          : seat.type.name === "COUPLE"
-                                            ? "border-cyan-300/35 bg-cyan-300/12 text-cyan-100 hover:bg-cyan-300/22"
-                                            : "border-white/10 bg-white/8 text-white/72 hover:border-red-500 hover:bg-red-600/20"
-                                  }`}
+                                  className={getSeatButtonClass(seat, selected)}
                                 >
                                   {seat.seatNumber}
                                 </button>
@@ -641,6 +734,9 @@ export default function TicketBookingPage() {
                     <LegendItem color="bg-amber-300/20 border-amber-300/45" label="VIP" />
                     <LegendItem color="bg-cyan-300/20 border-cyan-300/45" label="Ghế đôi" />
                     <LegendItem color="bg-red-600 border-red-300" label="Đang chọn" />
+                    <LegendItem color="bg-white/5 border-white/10" label="Đã đặt" />
+                    <LegendItem color="bg-orange-300/15 border-orange-300/45" label="Chờ thanh toán" />
+                    <LegendItem color="bg-slate-300/10 border-slate-300/35" label="Bảo trì" />
                   </div>
                 </>
               ) : (
@@ -679,27 +775,41 @@ export default function TicketBookingPage() {
                   <SummaryRow icon={<MapPin size={16} />} label={selectedCinema?.name ?? "Chọn rạp"} value={selectedCinema?.city ?? ""} />
                   <SummaryRow icon={<CalendarDays size={16} />} label={dates.find((date) => date.value === selectedDate)?.dateLabel ?? "Chọn ngày"} value={dates.find((date) => date.value === selectedDate)?.label ?? ""} />
                   <SummaryRow icon={<Clock3 size={16} />} label={selectedShowtime ? `${selectedShowtime.time} - ${selectedShowtime.room.name}` : "Chọn suất"} value={selectedShowtime?.price ?? ""} />
-                  <SummaryRow icon={<Armchair size={16} />} label={selectedSeats.length > 0 ? selectedSeats.map((seat) => seat.seatCode).join(", ") : "Chưa chọn ghế"} value={`${selectedSeats.length} ghế`} />
-                </div>
-
-                <div className="mt-5 space-y-3 text-sm">
-                  {selectedSeats.length > 0 ? (
-                    selectedSeats.map((seat) => (
-                      <PriceRow
-                        key={seat.id}
-                        label={`${seat.seatCode} - ${seat.type.label}`}
-                        value={seat.price}
-                      />
-                    ))
-                  ) : (
-                    <p className="rounded-md bg-white/6 px-3 py-3 text-sm font-semibold text-white/45">
-                      Chưa chọn ghế.
-                    </p>
-                  )}
+                  <SummaryRow icon={<Armchair size={16} />} label={selectedSeatSummary} value={`${selectedSeats.length} ghế`} />
                 </div>
 
                 <div className="mt-5 border-t border-white/10 pt-5">
                   <label className="grid gap-2 text-xs font-bold uppercase text-white/45">
+                    Mã giảm giá
+                    <div className="flex gap-2">
+                      <input
+                        value={promotionCode}
+                        onChange={(event) => handlePromotionCodeChange(event.target.value)}
+                        placeholder="Nhập mã"
+                        className="h-11 min-w-0 flex-1 rounded-md border border-white/10 bg-[#10141b] px-3 text-sm font-bold uppercase normal-case text-white outline-none transition placeholder:normal-case placeholder:text-white/28 focus:border-red-500"
+                      />
+                      <button
+                        type="button"
+                        disabled={!canApplyPromotion}
+                        onClick={() => void handleApplyPromotion()}
+                        className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-white px-4 text-sm font-black normal-case text-[#10141b] transition hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35"
+                      >
+                        {isApplyingPromotion ? <Loader2 size={16} className="animate-spin" /> : null}
+                        Áp dụng
+                      </button>
+                    </div>
+                    {promotionNotice ? (
+                      <span
+                        className={`text-xs font-semibold normal-case ${
+                          promotionNotice.type === "success" ? "text-emerald-300" : "text-red-300"
+                        }`}
+                      >
+                        {promotionNotice.text}
+                      </span>
+                    ) : null}
+                  </label>
+
+                  <label className="mt-4 grid gap-2 text-xs font-bold uppercase text-white/45">
                     Phương thức thanh toán
                     <select
                       value={selectedPaymentMethod}
@@ -716,11 +826,24 @@ export default function TicketBookingPage() {
                     </select>
                   </label>
 
+                  {promotionDiscount > 0 ? (
+                    <div className="mt-5 space-y-2 rounded-md border border-white/10 bg-black/25 p-3 text-sm">
+                      <div className="flex items-center justify-between gap-4 text-white/55">
+                        <span>Tạm tính</span>
+                        <span className="font-bold text-white/70">{formatCurrency(seatSubtotal)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-4 text-emerald-300">
+                        <span>Giảm giá {appliedPromotion?.code}</span>
+                        <span className="font-black">-{formatCurrency(promotionDiscount)}</span>
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div className="mt-5 flex items-end justify-between gap-4">
                     <div>
                       <p className="text-xs font-bold uppercase text-white/45">Tổng thanh toán</p>
                       <p className="mt-1 text-3xl font-black text-red-300">
-                        {formatCurrency(seatSubtotal)}
+                        {formatCurrency(orderTotal)}
                       </p>
                     </div>
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-red-600/15 text-red-300">
@@ -838,6 +961,38 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function getSeatButtonClass(seat: TicketBookingSeat, selected: boolean) {
+  const baseClass = "h-10 rounded-md border text-xs font-black transition";
+
+  if (selected) {
+    return `${baseClass} border-red-300 bg-red-600 text-white shadow-lg shadow-red-950/40`;
+  }
+
+  if (!seat.isAvailable) {
+    switch (seat.availabilityStatus) {
+      case "BOOKED":
+        return `${baseClass} cursor-not-allowed border-white/10 bg-white/5 text-white/20`;
+      case "PENDING_PAYMENT":
+        return `${baseClass} cursor-not-allowed border-orange-300/45 bg-orange-300/15 text-orange-100/70`;
+      case "MAINTENANCE":
+      case "LOCKED":
+        return `${baseClass} cursor-not-allowed border-dashed border-slate-300/35 bg-slate-300/10 text-slate-100/45`;
+      default:
+        return `${baseClass} cursor-not-allowed border-white/5 bg-white/5 text-white/20`;
+    }
+  }
+
+  if (seat.type.name === "VIP") {
+    return `${baseClass} border-amber-300/35 bg-amber-300/12 text-amber-100 hover:bg-amber-300/22`;
+  }
+
+  if (seat.type.name === "COUPLE") {
+    return `${baseClass} border-cyan-300/35 bg-cyan-300/12 text-cyan-100 hover:bg-cyan-300/22`;
+  }
+
+  return `${baseClass} border-white/10 bg-white/8 text-white/72 hover:border-red-500 hover:bg-red-600/20`;
+}
+
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
     <div className="flex items-center gap-2 rounded-md border border-white/10 bg-black/25 px-3 py-2">
@@ -863,15 +1018,6 @@ function SummaryRow({
         <span className="min-w-0 truncate">{label}</span>
       </span>
       <span className="shrink-0 text-xs font-bold text-white/42">{value}</span>
-    </div>
-  );
-}
-
-function PriceRow({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-white/55">{label}</span>
-      <span className="font-black">{formatCurrency(value)}</span>
     </div>
   );
 }

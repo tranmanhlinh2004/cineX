@@ -13,6 +13,7 @@ import {
   Users,
   Video,
 } from "lucide-react";
+import MovieReviewsSection from "@/components/MovieReviewsSection";
 import type { HomeMovie } from "@/lib/home-movies";
 
 type MovieDetailPageProps = {
@@ -307,6 +308,14 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
             </div>
           </aside>
         </section>
+
+        <MovieReviewsSection
+          movieId={movie.id}
+          movieTitle={movie.title}
+          initialRating={movie.rating}
+          initialReviewCount={movie.reviewCount}
+          initialReviews={movie.reviews}
+        />
       </section>
     </main>
   );

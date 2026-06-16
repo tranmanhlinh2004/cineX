@@ -12,9 +12,11 @@ export type AuthUser = {
 export const AUTH_USER_KEY = "cinex_auth_user";
 export const AUTH_TOKEN_KEY = "cinex_auth_token";
 export const AUTH_STORAGE_EVENT = "cinex-auth-change";
+export const AUTH_DEV_SESSION_KEY = "cinex_auth_dev_session";
 
 const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF"]);
 const isBrowser = () => typeof window !== "undefined";
+let authResetForDevSession = false;
 
 const notifyAuthChange = () => {
   if (!isBrowser()) {
@@ -24,10 +26,57 @@ const notifyAuthChange = () => {
   window.dispatchEvent(new Event(AUTH_STORAGE_EVENT));
 };
 
+export function syncAuthDevSession() {
+  const currentDevSessionId =
+    process.env.NODE_ENV === "development"
+      ? (process.env.NEXT_PUBLIC_CINEX_DEV_SESSION_ID ?? "")
+      : "";
+
+  if (!isBrowser() || !currentDevSessionId) {
+    return false;
+  }
+
+  const storedDevSessionId = window.localStorage.getItem(AUTH_DEV_SESSION_KEY);
+
+  if (storedDevSessionId === currentDevSessionId) {
+    return false;
+  }
+
+  window.localStorage.setItem(AUTH_DEV_SESSION_KEY, currentDevSessionId);
+
+  const hadAuthSession = Boolean(
+    window.localStorage.getItem(AUTH_USER_KEY) ||
+      window.localStorage.getItem(AUTH_TOKEN_KEY),
+  );
+
+  window.localStorage.removeItem(AUTH_USER_KEY);
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  authResetForDevSession = true;
+
+  if (hadAuthSession) {
+    notifyAuthChange();
+  }
+
+  return true;
+}
+
+export function consumeAuthDevSessionReset() {
+  syncAuthDevSession();
+
+  if (!authResetForDevSession) {
+    return false;
+  }
+
+  authResetForDevSession = false;
+  return true;
+}
+
 export function getAuthUser(): AuthUser | null {
   if (!isBrowser()) {
     return null;
   }
+
+  syncAuthDevSession();
 
   const rawUser = window.localStorage.getItem(AUTH_USER_KEY);
 
@@ -62,6 +111,8 @@ export function getAuthToken() {
     return "";
   }
 
+  syncAuthDevSession();
+
   return window.localStorage.getItem(AUTH_TOKEN_KEY) ?? "";
 }
 
@@ -69,6 +120,8 @@ export function saveAuthUser(user: AuthUser, token?: string) {
   if (!isBrowser()) {
     return;
   }
+
+  syncAuthDevSession();
 
   window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
 

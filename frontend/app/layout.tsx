@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import DevAuthSessionReset from "@/components/auth/DevAuthSessionReset";
 import NavigationInterceptor from "@/components/navigation/NavigationInterceptor";
 import "./globals.css";
 
@@ -16,6 +17,7 @@ export default function RootLayout({
   return (
     <html lang="vi">
       <body className="min-h-screen bg-black text-white antialiased">
+        <DevAuthSessionReset />
         {children}
         <Suspense fallback={null}>
           <NavigationInterceptor />

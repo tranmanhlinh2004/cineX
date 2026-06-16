@@ -7,10 +7,14 @@ import {
   ShowtimeStatus,
   type MovieStatus,
   type Prisma,
+  type Promotion,
 } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import path from "node:path";
 import { URL } from "node:url";
 
 const connectionString = process.env.DATABASE_URL;
@@ -32,6 +36,13 @@ const maxCatalogPageSize = 24;
 const maxJsonBodyLength = 15_000_000;
 const avatarMaxBytes = 10 * 1024 * 1024;
 const avatarDataUrlPattern = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+const movieImageMaxBytes = 10 * 1024 * 1024;
+const movieImageDataUrlPattern = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
+const movieImageExtensions: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const pendingPaymentWindowMs = 5 * 60 * 1000;
 const paymentMethods = ["CASH", "MOMO", "VNPAY", "ZALOPAY", "BANKING", "CARD"] as const;
@@ -42,6 +53,9 @@ const ticketBookingPaymentMethods = [
 const paymentMethodSet = new Set<string>(paymentMethods);
 const ticketBookingPaymentMethodSet = new Set<string>(ticketBookingPaymentMethods);
 const demoShowtimeRefreshDayCount = 5;
+const showtimeChangeoverMinutes = 15;
+const dayInMs = 24 * 60 * 60 * 1000;
+const catalogDateKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 type JsonBody = Record<string, unknown>;
 
@@ -174,9 +188,7 @@ function getRedirectTo(roleName: string) {
 }
 
 function getStartOfToday() {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  return now;
+  return getVietnamDateRange(new Date()).start;
 }
 
 function getDateKey(date: Date) {
@@ -184,6 +196,42 @@ function getDateKey(date: Date) {
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
 
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getVietnamDateRange(referenceDate: Date) {
+  const dateKey = getDateKey(referenceDate);
+  const start = new Date(`${dateKey}T00:00:00.000+07:00`);
+  const end = new Date(start.getTime() + dayInMs);
+
+  return {
+    dateKey,
+    start,
+    end,
+  };
+}
+
+function getVietnamDateRangeFromDateKey(dateKey: string) {
+  if (!catalogDateKeyPattern.test(dateKey)) {
+    return null;
+  }
+
+  const start = new Date(`${dateKey}T00:00:00.000+07:00`);
+
+  if (!Number.isFinite(start.getTime()) || getDateKey(start) !== dateKey) {
+    return null;
+  }
+
+  return {
+    dateKey,
+    start,
+    end: new Date(start.getTime() + dayInMs),
+  };
+}
+
+function getCatalogDateRange(searchParams: URLSearchParams) {
+  const dateKey = searchParams.get("date")?.trim();
+
+  return dateKey ? getVietnamDateRangeFromDateKey(dateKey) : null;
 }
 
 function getRelativeDateKey(offsetDays: number) {
@@ -255,7 +303,12 @@ function formatCurrency(value: number) {
   return currencyFormatter.format(value).replace(/\s/g, "");
 }
 
-function getMovieInclude(now: Date) {
+function getMovieInclude(
+  now: Date,
+  options: { showtimeStartTime?: Prisma.ShowtimeWhereInput["startTime"] } = {},
+) {
+  const showtimeStartTime = options.showtimeStartTime ?? { gte: now };
+
   return {
     movieGenres: {
       include: {
@@ -281,6 +334,7 @@ function getMovieInclude(now: Date) {
         createdAt: true,
         user: {
           select: {
+            id: true,
             fullName: true,
           },
         },
@@ -289,9 +343,7 @@ function getMovieInclude(now: Date) {
     showtimes: {
       where: {
         status: ShowtimeStatus.ACTIVE,
-        startTime: {
-          gte: now,
-        },
+        startTime: showtimeStartTime,
       },
       orderBy: {
         startTime: "asc" as const,
@@ -332,23 +384,43 @@ function getMovieInclude(now: Date) {
 
 async function fetchHomeMovieRecords(
   now: Date,
-  options: { status?: MovieStatus; limit?: number; offset?: number } = {},
+  options: {
+    status?: MovieStatus;
+    where?: Prisma.MovieWhereInput;
+    limit?: number;
+    offset?: number;
+    showtimeStartTime?: Prisma.ShowtimeWhereInput["startTime"];
+  } = {},
 ) {
   const shouldOrderByLatest =
     options.limit !== undefined || options.offset !== undefined;
+  const whereFilters: Prisma.MovieWhereInput[] = [];
+
+  if (options.where) {
+    whereFilters.push(options.where);
+  }
+
+  if (options.status) {
+    whereFilters.push({ status: options.status });
+  }
+
+  const where =
+    whereFilters.length === 0
+      ? undefined
+      : whereFilters.length === 1
+        ? whereFilters[0]
+        : { AND: whereFilters };
 
   return prisma.movie.findMany({
-    where: options.status
-      ? {
-          status: options.status,
-        }
-      : undefined,
+    where,
     orderBy: shouldOrderByLatest
       ? [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }]
       : undefined,
     skip: options.offset,
     take: options.limit,
-    include: getMovieInclude(now),
+    include: getMovieInclude(now, {
+      showtimeStartTime: options.showtimeStartTime,
+    }),
   });
 }
 
@@ -453,6 +525,7 @@ function serializeHomeMovie(movie: HomeMovieRecord) {
     reviewCount: movie.reviews.length,
     reviews: movie.reviews.map((review) => ({
       id: review.id,
+      userId: review.user.id,
       rating: review.rating,
       comment: review.comment,
       createdAt: review.createdAt.toISOString(),
@@ -474,6 +547,72 @@ function serializeHomeMovie(movie: HomeMovieRecord) {
 
 type HomeMovie = ReturnType<typeof serializeHomeMovie>;
 type HomeShowtime = HomeMovie["showtimeDetails"][number];
+
+function filterNonOverlappingHomeShowtimes(showtimes: HomeShowtime[]) {
+  const latestEndByRoomId = new Map<number, number>();
+
+  return [...showtimes]
+    .sort(
+      (leftShowtime, rightShowtime) =>
+        leftShowtime.room.id - rightShowtime.room.id ||
+        new Date(leftShowtime.startTime).getTime() - new Date(rightShowtime.startTime).getTime() ||
+        leftShowtime.id - rightShowtime.id,
+    )
+    .filter((showtime) => {
+      const latestEnd = latestEndByRoomId.get(showtime.room.id) ?? Number.NEGATIVE_INFINITY;
+      const startTime = new Date(showtime.startTime).getTime();
+
+      if (startTime < latestEnd) {
+        return false;
+      }
+
+      latestEndByRoomId.set(showtime.room.id, new Date(showtime.endTime).getTime());
+      return true;
+    })
+    .sort(
+      (leftShowtime, rightShowtime) =>
+        new Date(leftShowtime.startTime).getTime() - new Date(rightShowtime.startTime).getTime() ||
+        leftShowtime.id - rightShowtime.id,
+    );
+}
+
+function filterHomeMovieShowtimesForDisplay(movies: HomeMovie[]) {
+  const visibleShowtimeIds = new Set(
+    filterNonOverlappingHomeShowtimes(movies.flatMap((movie) => movie.showtimeDetails)).map(
+      (showtime) => showtime.id,
+    ),
+  );
+
+  return movies.map((movie) => {
+    const showtimeDetails = movie.showtimeDetails.filter((showtime) =>
+      visibleShowtimeIds.has(showtime.id),
+    );
+
+    return {
+      ...movie,
+      showtimes: showtimeDetails.map((showtime) => showtime.time),
+      showtimeDetails,
+    };
+  });
+}
+
+function getMoviesShowingOnDate(movies: HomeMovie[], dateKey: string) {
+  return movies
+    .map((movie) => {
+      const showtimeDetails = movie.showtimeDetails.filter(
+        (showtime) => showtime.date === dateKey,
+      );
+
+      return {
+        ...movie,
+        statusCode: "NOW_SHOWING" as const,
+        status: getMovieStatusLabel("NOW_SHOWING"),
+        showtimes: showtimeDetails.map((showtime) => showtime.time),
+        showtimeDetails,
+      };
+    })
+    .filter((movie) => movie.showtimeDetails.length > 0);
+}
 
 function compareLatestMovieRecords(leftMovie: HomeMovie, rightMovie: HomeMovie) {
   const updatedCompare =
@@ -534,8 +673,13 @@ function buildScheduleDates(showtimes: HomeShowtime[]) {
 
 async function loadHomePageData() {
   const now = new Date();
+  const todayRange = getVietnamDateRange(now);
   const [movieRecords, cinemaRecords] = await Promise.all([
-    fetchHomeMovieRecords(now),
+    fetchHomeMovieRecords(now, {
+      showtimeStartTime: {
+        gte: todayRange.start,
+      },
+    }),
     prisma.cinema.findMany({
       orderBy: {
         id: "asc",
@@ -553,9 +697,8 @@ async function loadHomePageData() {
     }),
   ]);
 
-  const movies = movieRecords
-    .map(serializeHomeMovie)
-    .sort((leftMovie, rightMovie) => {
+  const movies = filterHomeMovieShowtimesForDisplay(movieRecords.map(serializeHomeMovie)).sort(
+    (leftMovie, rightMovie) => {
       const statusCompare =
         getMovieStatusRank(leftMovie.statusCode) - getMovieStatusRank(rightMovie.statusCode);
 
@@ -571,13 +714,17 @@ async function loadHomePageData() {
         : 0;
 
       return rightRelease - leftRelease;
-    });
-  const nowShowingMovies = movies
-    .filter((movie) => movie.statusCode === "NOW_SHOWING")
-    .sort(compareLatestMovieRecords)
-    .slice(0, homeSectionLimit);
+    },
+  );
+  const moviesShowingToday = getMoviesShowingOnDate(movies, todayRange.dateKey).sort(
+    compareLatestMovieRecords,
+  );
+  const moviesShowingTodayIds = new Set(moviesShowingToday.map((movie) => movie.id));
+  const nowShowingMovies = moviesShowingToday.slice(0, homeSectionLimit);
   const comingSoonMovies = movies
-    .filter((movie) => movie.statusCode === "COMING_SOON")
+    .filter(
+      (movie) => movie.statusCode === "COMING_SOON" && !moviesShowingTodayIds.has(movie.id),
+    )
     .sort(compareLatestMovieRecords)
     .slice(0, homeSectionLimit);
   const heroMovies = (nowShowingMovies.length > 0 ? nowShowingMovies : movies)
@@ -585,6 +732,7 @@ async function loadHomePageData() {
     .slice(0, 5);
   const upcomingShowtimes = movies
     .flatMap((movie) => movie.showtimeDetails)
+    .filter((showtime) => new Date(showtime.startTime).getTime() >= now.getTime())
     .sort(
       (leftShowtime, rightShowtime) =>
         new Date(leftShowtime.startTime).getTime() -
@@ -616,25 +764,106 @@ async function loadHomePageData() {
   };
 }
 
-async function loadMovieCatalogData(
-  status: MovieStatus,
-  options: { page?: number; pageSize?: number } = {},
+async function loadNowShowingCatalogData(
+  options: {
+    page?: number;
+    pageSize?: number;
+    dateRange?: { dateKey: string; start: Date; end: Date };
+  } = {},
 ) {
   const now = new Date();
+  const todayRange = getVietnamDateRange(now);
+  const catalogDateRange = options.dateRange ?? todayRange;
   const requestedPage = options.page ?? 1;
   const pageSize = options.pageSize ?? catalogPageSize;
-  const where = { status };
+  const where: Prisma.MovieWhereInput = {
+    status: "NOW_SHOWING",
+    AND: [
+      {
+        OR: [
+          { releaseDate: null },
+          {
+            releaseDate: {
+              lt: catalogDateRange.end,
+            },
+          },
+        ],
+      },
+      {
+        OR: [
+          { endDate: null },
+          {
+            endDate: {
+              gte: catalogDateRange.start,
+            },
+          },
+        ],
+      },
+    ],
+  };
   const totalItems = await prisma.movie.count({ where });
   const totalPages = Math.ceil(totalItems / pageSize);
   const page = totalPages > 0 ? Math.min(requestedPage, totalPages) : 1;
 
-  const movies = (await fetchHomeMovieRecords(now, {
-    status,
-    limit: pageSize,
-    offset: (page - 1) * pageSize,
-  }))
-    .map(serializeHomeMovie)
-    .sort(compareLatestMovieRecords);
+  const movies = filterHomeMovieShowtimesForDisplay(
+    (
+      await fetchHomeMovieRecords(now, {
+        where,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+        showtimeStartTime: {
+          gte: catalogDateRange.start,
+          lt: catalogDateRange.end,
+        },
+      })
+    ).map(serializeHomeMovie),
+  ).sort(compareLatestMovieRecords);
+
+  return {
+    generatedAt: now.toISOString(),
+    movies,
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages,
+      hasPreviousPage: page > 1,
+      hasNextPage: totalPages > 0 && page < totalPages,
+    },
+  };
+}
+
+async function loadMovieCatalogData(
+  status: MovieStatus,
+  options: {
+    page?: number;
+    pageSize?: number;
+    releaseDateRange?: { start: Date; end: Date };
+  } = {},
+) {
+  const now = new Date();
+  const requestedPage = options.page ?? 1;
+  const pageSize = options.pageSize ?? catalogPageSize;
+  const where: Prisma.MovieWhereInput = { status };
+
+  if (options.releaseDateRange) {
+    where.releaseDate = {
+      gte: options.releaseDateRange.start,
+      lt: options.releaseDateRange.end,
+    };
+  }
+
+  const totalItems = await prisma.movie.count({ where });
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const page = totalPages > 0 ? Math.min(requestedPage, totalPages) : 1;
+
+  const movies = filterHomeMovieShowtimesForDisplay(
+    (await fetchHomeMovieRecords(now, {
+      where,
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    })).map(serializeHomeMovie),
+  ).sort(compareLatestMovieRecords);
 
   return {
     generatedAt: now.toISOString(),
@@ -662,6 +891,80 @@ async function loadMovieDetailData(movieId: number) {
     generatedAt: now.toISOString(),
     movie: serializeHomeMovie(movie),
   };
+}
+
+async function handleCreateMovieReview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  movieId: number,
+) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui long dang nhap de binh luan va danh gia phim." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const rating = numberBodyField(body, "rating");
+  const comment = stringField(body, "comment");
+
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    sendJson(response, 400, { message: "Danh gia phai nam trong khoang 1 den 5 sao." });
+    return;
+  }
+
+  if (comment.length > 1000) {
+    sendJson(response, 400, { message: "Binh luan khong duoc vuot qua 1000 ky tu." });
+    return;
+  }
+
+  const movie = await prisma.movie.findUnique({
+    where: {
+      id: movieId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!movie) {
+    sendJson(response, 404, { message: "Khong tim thay phim." });
+    return;
+  }
+
+  await prisma.review.upsert({
+    where: {
+      userId_movieId: {
+        userId: user.id,
+        movieId,
+      },
+    },
+    update: {
+      rating,
+      comment: comment || null,
+      isHidden: false,
+    },
+    create: {
+      userId: user.id,
+      movieId,
+      rating,
+      comment: comment || null,
+      isHidden: false,
+    },
+  });
+
+  const movieDetailData = await loadMovieDetailData(movieId);
+
+  if (!movieDetailData) {
+    sendJson(response, 404, { message: "Khong tim thay phim." });
+    return;
+  }
+
+  sendJson(response, 200, {
+    message: "Da luu binh luan va danh gia phim.",
+    ...movieDetailData,
+  });
 }
 
 async function isPasswordMatch(inputPassword: string, storedPassword: string) {
@@ -820,6 +1123,41 @@ function formatDateTimeLabel(date: Date) {
   return `${fullDateFormatter.format(date)} ${timeFormatter.format(date)}`;
 }
 
+function filterNonOverlappingShowtimeRecords<
+  Showtime extends {
+    id: number;
+    roomId: number;
+    startTime: Date;
+    endTime: Date;
+  },
+>(showtimes: Showtime[]) {
+  const latestEndByRoomId = new Map<number, number>();
+
+  return [...showtimes]
+    .sort(
+      (leftShowtime, rightShowtime) =>
+        leftShowtime.roomId - rightShowtime.roomId ||
+        leftShowtime.startTime.getTime() - rightShowtime.startTime.getTime() ||
+        leftShowtime.id - rightShowtime.id,
+    )
+    .filter((showtime) => {
+      const latestEnd = latestEndByRoomId.get(showtime.roomId) ?? Number.NEGATIVE_INFINITY;
+      const startTime = showtime.startTime.getTime();
+
+      if (startTime < latestEnd) {
+        return false;
+      }
+
+      latestEndByRoomId.set(showtime.roomId, showtime.endTime.getTime());
+      return true;
+    })
+    .sort(
+      (leftShowtime, rightShowtime) =>
+        leftShowtime.startTime.getTime() - rightShowtime.startTime.getTime() ||
+        leftShowtime.id - rightShowtime.id,
+    );
+}
+
 const adminAccountUserInclude = {
   role: true,
   refreshTokens: {
@@ -961,6 +1299,17 @@ function isPrismaErrorCode(error: unknown, code: string) {
     error !== null &&
     "code" in error &&
     (error as { code?: unknown }).code === code
+  );
+}
+
+function isShowtimeOverlapConstraintError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return (
+    isPrismaErrorCode(error, "P2004") ||
+    message.includes("showtimes_room_time_no_overlap") ||
+    message.includes("exclusion constraint") ||
+    message.includes("23P01")
   );
 }
 
@@ -1197,6 +1546,1460 @@ async function handleDeleteAdminAccount(
   sendJson(response, 200, {
     message: "Xóa tài khoản thành công.",
     deletedId: existingAccount.id,
+  });
+}
+
+const adminMovieStatusLabels = {
+  NOW_SHOWING: "Đang chiếu",
+  COMING_SOON: "Sắp chiếu",
+  ENDED: "Ngừng chiếu",
+} as const satisfies Record<MovieStatus, string>;
+
+const adminMovieInclude = {
+  movieGenres: {
+    include: {
+      genre: true,
+    },
+  },
+  movieImages: {
+    orderBy: {
+      sortOrder: "asc" as const,
+    },
+  },
+  showtimes: {
+    orderBy: {
+      startTime: "asc" as const,
+    },
+    include: {
+      room: {
+        include: {
+          cinema: true,
+          seats: {
+            select: {
+              id: true,
+              status: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: {
+          tickets: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.MovieInclude;
+
+type AdminMovieRecord = Prisma.MovieGetPayload<{
+  include: typeof adminMovieInclude;
+}>;
+
+function normalizeMovieInput(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function slugifyMovieTitle(value: string) {
+  return normalizeMovieInput(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90);
+}
+
+function getAdminMovieStatusLabel(status: MovieStatus) {
+  return adminMovieStatusLabels[status] ?? status;
+}
+
+function parseAdminMovieStatus(body: JsonBody, fallback: MovieStatus = "COMING_SOON") {
+  const rawStatus = stringField(body, "statusCode") || stringField(body, "status");
+
+  if (!rawStatus) {
+    return { value: fallback } as const;
+  }
+
+  const normalizedStatusCode = rawStatus.trim().toUpperCase();
+
+  if (normalizedStatusCode in adminMovieStatusLabels) {
+    return { value: normalizedStatusCode as MovieStatus } as const;
+  }
+
+  const normalizedStatus = normalizeMovieInput(rawStatus);
+
+  if (
+    normalizedStatus.includes("dang chieu") ||
+    normalizedStatus.includes("dang hoat dong")
+  ) {
+    return { value: "NOW_SHOWING" as MovieStatus } as const;
+  }
+
+  if (normalizedStatus.includes("sap chieu")) {
+    return { value: "COMING_SOON" as MovieStatus } as const;
+  }
+
+  if (
+    normalizedStatus.includes("ngung chieu") ||
+    normalizedStatus.includes("tam dung") ||
+    normalizedStatus.includes("da ket thuc") ||
+    normalizedStatus.includes("ket thuc")
+  ) {
+    return { value: "ENDED" as MovieStatus } as const;
+  }
+
+  return { error: "Trạng thái phim không hợp lệ." } as const;
+}
+
+function parseAdminMovieDuration(body: JsonBody, fallback?: number) {
+  const rawDuration =
+    body.durationMinutes ?? body.duration ?? body.runtime ?? body.length;
+
+  if (rawDuration === undefined || rawDuration === null || rawDuration === "") {
+    if (fallback !== undefined) {
+      return { value: fallback } as const;
+    }
+
+    return { error: "Vui lòng nhập thời lượng phim." } as const;
+  }
+
+  const duration =
+    typeof rawDuration === "number"
+      ? rawDuration
+      : Number.parseInt(String(rawDuration).replace(/[^\d]/g, ""), 10);
+
+  if (!Number.isFinite(duration) || duration < 1) {
+    return { error: "Thời lượng phim không hợp lệ." } as const;
+  }
+
+  return { value: Math.round(duration) } as const;
+}
+
+function parseAdminMovieDateValue(value: string) {
+  const displayMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const isoDateMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  const isoDateTime = Date.parse(value);
+
+  if (!displayMatch && !isoDateMatch && Number.isFinite(isoDateTime)) {
+    return new Date(isoDateTime);
+  }
+
+  const day = displayMatch ? Number(displayMatch[1]) : Number(isoDateMatch?.[3]);
+  const month = displayMatch ? Number(displayMatch[2]) : Number(isoDateMatch?.[2]);
+  const year = displayMatch ? Number(displayMatch[3]) : Number(isoDateMatch?.[1]);
+
+  if (!day || !month || !year) {
+    return null;
+  }
+
+  const localDate = new Date(year, month - 1, day);
+
+  if (
+    localDate.getFullYear() !== year ||
+    localDate.getMonth() !== month - 1 ||
+    localDate.getDate() !== day
+  ) {
+    return null;
+  }
+
+  const paddedMonth = String(month).padStart(2, "0");
+  const paddedDay = String(day).padStart(2, "0");
+
+  return new Date(`${year}-${paddedMonth}-${paddedDay}T00:00:00.000+07:00`);
+}
+
+function parseAdminMovieDateField(body: JsonBody, key: string, fallback?: Date | null) {
+  if (!(key in body)) {
+    return { value: fallback ?? null } as const;
+  }
+
+  const rawValue = stringField(body, key);
+
+  if (!rawValue) {
+    return { value: null } as const;
+  }
+
+  const value = parseAdminMovieDateValue(rawValue);
+
+  if (!value) {
+    return { error: `${key === "releaseDate" ? "Ngày khởi chiếu" : "Ngày kết thúc"} không hợp lệ.` } as const;
+  }
+
+  return { value } as const;
+}
+
+function nullableMovieStringField(body: JsonBody, key: string, fallback?: string | null) {
+  if (!(key in body)) {
+    return fallback ?? null;
+  }
+
+  const value = stringField(body, key);
+
+  return value || null;
+}
+
+function getAdminMovieGenreNames(body: JsonBody) {
+  const rawGenres = body.genres;
+  const genreValues = Array.isArray(rawGenres)
+    ? rawGenres
+    : [stringField(body, "genre") || stringField(body, "genres")];
+  const uniqueGenres = new Set<string>();
+
+  for (const genreValue of genreValues) {
+    if (typeof genreValue !== "string") {
+      continue;
+    }
+
+    for (const genreName of genreValue.split(",")) {
+      const trimmedGenreName = genreName.trim();
+
+      if (trimmedGenreName) {
+        uniqueGenres.add(trimmedGenreName);
+      }
+    }
+  }
+
+  return [...uniqueGenres];
+}
+
+function validateMovieAssetUrl(value: string | null, label: string) {
+  if (!value) {
+    return "";
+  }
+
+  if (value.startsWith("/")) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value);
+
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return "";
+    }
+  } catch {
+    // Continue validating as a data URL.
+  }
+
+  if (!avatarDataUrlPattern.test(value)) {
+    return `${label} phải là link ảnh hợp lệ hoặc đường dẫn bắt đầu bằng /.`;
+  }
+
+  const [, base64Data = ""] = value.split(",", 2);
+  const byteLength = Buffer.byteLength(base64Data, "base64");
+
+  if (byteLength > avatarMaxBytes) {
+    return `${label} tối đa 10 MB.`;
+  }
+
+  return "";
+}
+
+function validateOptionalHttpUrl(value: string | null, label: string) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value);
+
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return "";
+    }
+  } catch {
+    // Fall through to the validation error.
+  }
+
+  return `${label} phải là URL http hoặc https hợp lệ.`;
+}
+
+function getMovieUploadRoot() {
+  if (process.env.MOVIE_UPLOAD_DIR) {
+    return path.resolve(process.env.MOVIE_UPLOAD_DIR);
+  }
+
+  const rootFromRepository = path.resolve(process.cwd(), "frontend", "public", "movies");
+
+  if (existsSync(path.resolve(process.cwd(), "frontend", "public"))) {
+    return rootFromRepository;
+  }
+
+  return path.resolve(process.cwd(), "..", "frontend", "public", "movies");
+}
+
+function getMovieImageUploadKind(body: JsonBody) {
+  const kind = stringField(body, "kind").toLowerCase();
+
+  if (kind === "poster" || kind === "banner") {
+    return kind;
+  }
+
+  return null;
+}
+
+async function handleUploadAdminMovieImage(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const kind = getMovieImageUploadKind(body);
+  const dataUrl = stringField(body, "dataUrl");
+  const match = dataUrl.match(movieImageDataUrlPattern);
+
+  if (!kind) {
+    sendJson(response, 400, { message: "Loai anh phim khong hop le." });
+    return;
+  }
+
+  if (!match) {
+    sendJson(response, 400, { message: "Vui long chon anh JPEG, PNG hoac WEBP." });
+    return;
+  }
+
+  const [, contentType, base64Data = ""] = match;
+  const byteLength = Buffer.byteLength(base64Data, "base64");
+
+  if (byteLength < 1) {
+    sendJson(response, 400, { message: "File anh khong co du lieu." });
+    return;
+  }
+
+  if (byteLength > movieImageMaxBytes) {
+    sendJson(response, 400, { message: "Dung luong anh toi da 10 MB." });
+    return;
+  }
+
+  const extension = movieImageExtensions[contentType];
+
+  if (!extension) {
+    sendJson(response, 400, { message: "Dinh dang anh khong hop le." });
+    return;
+  }
+
+  const uploadDirectory = path.join(getMovieUploadRoot(), kind, "uploaded");
+  const fileName = `${kind}-${Date.now()}-${randomBytes(8).toString("hex")}.${extension}`;
+  const filePath = path.join(uploadDirectory, fileName);
+  const publicUrl = `/movies/${kind}/uploaded/${fileName}`;
+
+  await mkdir(uploadDirectory, { recursive: true });
+  await writeFile(filePath, Buffer.from(base64Data, "base64"));
+
+  sendJson(response, 201, {
+    message: "Upload anh phim thanh cong.",
+    url: publicUrl,
+    fileName,
+    size: byteLength,
+    contentType,
+  });
+}
+
+async function createUniqueMovieSlug(title: string, requestedSlug?: string, excludeMovieId?: number) {
+  const baseSlug = slugifyMovieTitle(requestedSlug || title) || `movie-${Date.now()}`;
+  let slug = baseSlug;
+  let suffix = 2;
+
+  while (true) {
+    const existingMovie = await prisma.movie.findUnique({
+      where: {
+        slug,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingMovie || existingMovie.id === excludeMovieId) {
+      return slug;
+    }
+
+    slug = `${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+}
+
+function getAdminMovieGenreCreates(genreNames: string[]) {
+  return genreNames.map((genreName) => ({
+    genre: {
+      connectOrCreate: {
+        where: {
+          name: genreName,
+        },
+        create: {
+          name: genreName,
+        },
+      },
+    },
+  }));
+}
+
+async function fetchAdminMovies() {
+  return prisma.movie.findMany({
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+    include: adminMovieInclude,
+  });
+}
+
+async function fetchAdminMovieById(movieId: number) {
+  return prisma.movie.findUnique({
+    where: {
+      id: movieId,
+    },
+    include: adminMovieInclude,
+  });
+}
+
+function serializeAdminMovie(movie: AdminMovieRecord) {
+  const genres = movie.movieGenres
+    .map((movieGenre) => movieGenre.genre.name)
+    .sort((left, right) => left.localeCompare(right, "vi"));
+  const poster = movie.posterUrl ?? movie.movieImages[0]?.imageUrl ?? "/movies/demo.png";
+  const banner = movie.bannerUrl ?? poster;
+  const cinemaNames = new Set<string>();
+
+  for (const showtime of movie.showtimes) {
+    cinemaNames.add(showtime.room.cinema.name);
+  }
+
+  const schedule = movie.showtimes.map(
+    (showtime) => `${timeFormatter.format(showtime.startTime)} - ${showtime.room.name}`,
+  );
+  const ticketsSold = movie.showtimes.reduce(
+    (total, showtime) => total + showtime._count.tickets,
+    0,
+  );
+
+  return {
+    id: movie.id,
+    slug: movie.slug,
+    title: movie.title,
+    genre: genres.join(", ") || "Chưa phân loại",
+    genres,
+    country: movie.country ?? "Đang cập nhật",
+    ageRating: movie.ageLimit ?? "P",
+    statusCode: movie.status,
+    status: getAdminMovieStatusLabel(movie.status),
+    poster,
+    banner,
+    posterUrl: movie.posterUrl ?? "",
+    bannerUrl: movie.bannerUrl ?? "",
+    durationMinutes: movie.duration,
+    duration: `${movie.duration} phút`,
+    language: movie.language ?? "Đang cập nhật",
+    releaseDate: formatNullableDate(movie.releaseDate) ?? "",
+    releaseDateIso: movie.releaseDate?.toISOString() ?? null,
+    endDate: formatNullableDate(movie.endDate) ?? "",
+    endDateIso: movie.endDate?.toISOString() ?? null,
+    director: movie.director ?? "",
+    actors: movie.actors ?? "",
+    description: movie.description ?? "",
+    trailerUrl: movie.trailerUrl ?? "",
+    cinemas: [...cinemaNames].sort((left, right) => left.localeCompare(right, "vi")),
+    schedule,
+    ticketsSold,
+    createdAt: movie.createdAt.toISOString(),
+    updatedAt: movie.updatedAt.toISOString(),
+  };
+}
+
+async function getAdminMovieRequestUser(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý phim." });
+    return null;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền quản lý phim." });
+    return null;
+  }
+
+  return user;
+}
+
+async function handleGetAdminMovies(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const movies = (await fetchAdminMovies()).map(serializeAdminMovie);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    movies,
+    stats: {
+      totalMovies: movies.length,
+      nowShowingMovies: movies.filter((movie) => movie.statusCode === "NOW_SHOWING").length,
+      comingSoonMovies: movies.filter((movie) => movie.statusCode === "COMING_SOON").length,
+      endedMovies: movies.filter((movie) => movie.statusCode === "ENDED").length,
+      ticketsSold: movies.reduce((total, movie) => total + movie.ticketsSold, 0),
+    },
+  });
+}
+
+async function handleGetAdminMovie(
+  request: IncomingMessage,
+  response: ServerResponse,
+  movieId: number,
+) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const movie = await fetchAdminMovieById(movieId);
+
+  if (!movie) {
+    sendJson(response, 404, { message: "Không tìm thấy phim." });
+    return;
+  }
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    movie: serializeAdminMovie(movie),
+  });
+}
+
+async function handleCreateAdminMovie(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const title = stringField(body, "title");
+  const parsedDuration = parseAdminMovieDuration(body);
+  const parsedReleaseDate = parseAdminMovieDateField(body, "releaseDate");
+  const parsedEndDate = parseAdminMovieDateField(body, "endDate");
+  const parsedStatus = parseAdminMovieStatus(body);
+  const posterUrl = nullableMovieStringField(body, "posterUrl");
+  const bannerUrl = nullableMovieStringField(body, "bannerUrl");
+  const trailerUrl = nullableMovieStringField(body, "trailerUrl");
+  const posterError = validateMovieAssetUrl(posterUrl, "Poster phim");
+  const bannerError = validateMovieAssetUrl(bannerUrl, "Banner phim");
+  const trailerError = validateOptionalHttpUrl(trailerUrl, "Trailer phim");
+
+  if (!title) {
+    sendJson(response, 400, { message: "Vui lòng nhập tên phim." });
+    return;
+  }
+
+  if ("error" in parsedDuration) {
+    sendJson(response, 400, { message: parsedDuration.error });
+    return;
+  }
+
+  if ("error" in parsedReleaseDate) {
+    sendJson(response, 400, { message: parsedReleaseDate.error });
+    return;
+  }
+
+  if ("error" in parsedEndDate) {
+    sendJson(response, 400, { message: parsedEndDate.error });
+    return;
+  }
+
+  if ("error" in parsedStatus) {
+    sendJson(response, 400, { message: parsedStatus.error });
+    return;
+  }
+
+  if (posterError || bannerError || trailerError) {
+    sendJson(response, 400, { message: posterError || bannerError || trailerError });
+    return;
+  }
+
+  const genreNames = getAdminMovieGenreNames(body);
+  const slug = await createUniqueMovieSlug(title, stringField(body, "slug"));
+
+  try {
+    const createdMovie = await prisma.movie.create({
+      data: {
+        title,
+        slug,
+        description: nullableMovieStringField(body, "description"),
+        director: nullableMovieStringField(body, "director"),
+        actors: nullableMovieStringField(body, "actors"),
+        duration: parsedDuration.value,
+        releaseDate: parsedReleaseDate.value,
+        endDate: parsedEndDate.value,
+        language: nullableMovieStringField(body, "language"),
+        country: nullableMovieStringField(body, "country"),
+        ageLimit: nullableMovieStringField(body, "ageRating") || nullableMovieStringField(body, "ageLimit"),
+        trailerUrl,
+        posterUrl,
+        bannerUrl,
+        status: parsedStatus.value,
+        movieGenres: {
+          create: getAdminMovieGenreCreates(genreNames),
+        },
+      },
+      include: adminMovieInclude,
+    });
+
+    sendJson(response, 201, {
+      message: "Thêm phim thành công.",
+      movie: serializeAdminMovie(createdMovie),
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2002")) {
+      sendJson(response, 409, { message: "Slug phim đã tồn tại." });
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function handleUpdateAdminMovie(
+  request: IncomingMessage,
+  response: ServerResponse,
+  movieId: number,
+) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingMovie = await fetchAdminMovieById(movieId);
+
+  if (!existingMovie) {
+    sendJson(response, 404, { message: "Không tìm thấy phim cần cập nhật." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const title = "title" in body ? stringField(body, "title") : existingMovie.title;
+  const parsedDuration = parseAdminMovieDuration(body, existingMovie.duration);
+  const parsedReleaseDate = parseAdminMovieDateField(
+    body,
+    "releaseDate",
+    existingMovie.releaseDate,
+  );
+  const parsedEndDate = parseAdminMovieDateField(body, "endDate", existingMovie.endDate);
+  const parsedStatus = parseAdminMovieStatus(body, existingMovie.status);
+  const posterUrl = nullableMovieStringField(body, "posterUrl", existingMovie.posterUrl);
+  const bannerUrl = nullableMovieStringField(body, "bannerUrl", existingMovie.bannerUrl);
+  const trailerUrl = nullableMovieStringField(body, "trailerUrl", existingMovie.trailerUrl);
+  const posterError = validateMovieAssetUrl(posterUrl, "Poster phim");
+  const bannerError = validateMovieAssetUrl(bannerUrl, "Banner phim");
+  const trailerError = validateOptionalHttpUrl(trailerUrl, "Trailer phim");
+
+  if (!title) {
+    sendJson(response, 400, { message: "Vui lòng nhập tên phim." });
+    return;
+  }
+
+  if ("error" in parsedDuration) {
+    sendJson(response, 400, { message: parsedDuration.error });
+    return;
+  }
+
+  if ("error" in parsedReleaseDate) {
+    sendJson(response, 400, { message: parsedReleaseDate.error });
+    return;
+  }
+
+  if ("error" in parsedEndDate) {
+    sendJson(response, 400, { message: parsedEndDate.error });
+    return;
+  }
+
+  if ("error" in parsedStatus) {
+    sendJson(response, 400, { message: parsedStatus.error });
+    return;
+  }
+
+  if (posterError || bannerError || trailerError) {
+    sendJson(response, 400, { message: posterError || bannerError || trailerError });
+    return;
+  }
+
+  const genreNames = getAdminMovieGenreNames(body);
+  const shouldUpdateGenres = "genre" in body || "genres" in body;
+  const slug =
+    "slug" in body
+      ? await createUniqueMovieSlug(title, stringField(body, "slug"), existingMovie.id)
+      : existingMovie.slug;
+
+  try {
+    const updatedMovie = await prisma.movie.update({
+      where: {
+        id: existingMovie.id,
+      },
+      data: {
+        title,
+        slug,
+        description: nullableMovieStringField(body, "description", existingMovie.description),
+        director: nullableMovieStringField(body, "director", existingMovie.director),
+        actors: nullableMovieStringField(body, "actors", existingMovie.actors),
+        duration: parsedDuration.value,
+        releaseDate: parsedReleaseDate.value,
+        endDate: parsedEndDate.value,
+        language: nullableMovieStringField(body, "language", existingMovie.language),
+        country: nullableMovieStringField(body, "country", existingMovie.country),
+        ageLimit:
+          nullableMovieStringField(body, "ageRating", existingMovie.ageLimit) ||
+          nullableMovieStringField(body, "ageLimit", existingMovie.ageLimit),
+        trailerUrl,
+        posterUrl,
+        bannerUrl,
+        status: parsedStatus.value,
+        ...(shouldUpdateGenres
+          ? {
+              movieGenres: {
+                deleteMany: {},
+                create: getAdminMovieGenreCreates(genreNames),
+              },
+            }
+          : {}),
+      },
+      include: adminMovieInclude,
+    });
+
+    sendJson(response, 200, {
+      message: "Cập nhật phim thành công.",
+      movie: serializeAdminMovie(updatedMovie),
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2002")) {
+      sendJson(response, 409, { message: "Slug phim đã tồn tại." });
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function handleDeleteAdminMovie(
+  request: IncomingMessage,
+  response: ServerResponse,
+  movieId: number,
+) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingMovie = await prisma.movie.findUnique({
+    where: {
+      id: movieId,
+    },
+    select: {
+      id: true,
+      title: true,
+    },
+  });
+
+  if (!existingMovie) {
+    sendJson(response, 404, { message: "Không tìm thấy phim cần xóa." });
+    return;
+  }
+
+  try {
+    await prisma.movie.delete({
+      where: {
+        id: existingMovie.id,
+      },
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2003")) {
+      sendJson(response, 409, {
+        message: "Phim đã có dữ liệu phát sinh, không thể xóa khỏi database.",
+      });
+      return;
+    }
+
+    throw error;
+  }
+
+  sendJson(response, 200, {
+    message: "Xóa phim thành công.",
+    deletedId: existingMovie.id,
+  });
+}
+
+type AdminGenreRecord = Prisma.GenreGetPayload<{
+  include: {
+    _count: {
+      select: {
+        movieGenres: true;
+      };
+    };
+  };
+}>;
+
+async function fetchAdminGenres() {
+  return prisma.genre.findMany({
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+    include: {
+      _count: {
+        select: {
+          movieGenres: true,
+        },
+      },
+    },
+  });
+}
+
+function serializeAdminGenre(genre: AdminGenreRecord) {
+  const movieCount = genre._count.movieGenres;
+
+  return {
+    id: genre.id,
+    name: genre.name,
+    slug: slugifyMovieTitle(genre.name),
+    description: genre.description ?? "",
+    movieCount,
+    movieCountLabel: new Intl.NumberFormat("vi-VN").format(movieCount),
+    displayArea: movieCount > 0 ? "Danh mục phim" : "Chưa gắn phim",
+    status: movieCount > 0 ? "Đang hoạt động" : "Chưa sử dụng",
+    createdAt: genre.createdAt.toISOString(),
+    updatedAt: genre.updatedAt.toISOString(),
+  };
+}
+
+async function handleGetAdminGenres(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminMovieRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const genres = (await fetchAdminGenres()).map(serializeAdminGenre);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    genres,
+    stats: {
+      totalGenres: genres.length,
+      activeGenres: genres.filter((genre) => genre.movieCount > 0).length,
+      unusedGenres: genres.filter((genre) => genre.movieCount === 0).length,
+      movieGenreLinks: genres.reduce((total, genre) => total + genre.movieCount, 0),
+    },
+  });
+}
+
+const adminShowtimeStatusLabels = {
+  ACTIVE: "Đang mở bán",
+  CANCELLED: "Tạm dừng",
+  FINISHED: "Đã kết thúc",
+} satisfies Record<ShowtimeStatus, string>;
+
+const adminShowtimeInclude = {
+  movie: {
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      duration: true,
+      language: true,
+      ageLimit: true,
+    },
+  },
+  room: {
+    include: {
+      cinema: true,
+    },
+  },
+  _count: {
+    select: {
+      bookingDetails: true,
+      seatHolds: true,
+      tickets: true,
+    },
+  },
+} satisfies Prisma.ShowtimeInclude;
+
+type AdminShowtimeRecord = Prisma.ShowtimeGetPayload<{
+  include: typeof adminShowtimeInclude;
+}>;
+
+function getAdminShowtimeStatusLabel(status: ShowtimeStatus) {
+  return adminShowtimeStatusLabels[status] ?? status;
+}
+
+function parseAdminShowtimeStatus(
+  body: JsonBody,
+  fallback: ShowtimeStatus = ShowtimeStatus.ACTIVE,
+) {
+  const rawStatus = stringField(body, "statusCode") || stringField(body, "status");
+
+  if (!rawStatus) {
+    return { value: fallback } as const;
+  }
+
+  const normalizedStatusCode = rawStatus.trim().toUpperCase();
+
+  if (normalizedStatusCode in adminShowtimeStatusLabels) {
+    return { value: normalizedStatusCode as ShowtimeStatus } as const;
+  }
+
+  const normalizedStatus = normalizeMovieInput(rawStatus);
+
+  if (normalizedStatus.includes("mo ban") || normalizedStatus.includes("hoat dong")) {
+    return { value: ShowtimeStatus.ACTIVE } as const;
+  }
+
+  if (normalizedStatus.includes("tam dung") || normalizedStatus.includes("huy")) {
+    return { value: ShowtimeStatus.CANCELLED } as const;
+  }
+
+  if (normalizedStatus.includes("ket thuc") || normalizedStatus.includes("da chieu")) {
+    return { value: ShowtimeStatus.FINISHED } as const;
+  }
+
+  return { error: "Trạng thái suất chiếu không hợp lệ." } as const;
+}
+
+function parsePositiveNumberField(body: JsonBody, key: string, fallback?: number) {
+  const rawValue = body[key];
+
+  if (rawValue === undefined || rawValue === null || rawValue === "") {
+    if (fallback !== undefined) {
+      return { value: fallback } as const;
+    }
+
+    return { error: "Vui lòng nhập giá vé." } as const;
+  }
+
+  const textValue = String(rawValue).trim();
+  const normalizedValue =
+    textValue.includes(".") && /^\d{1,3}(\.\d{3})+$/.test(textValue)
+      ? textValue.replace(/\./g, "")
+      : textValue.replace(",", ".");
+  const value =
+    typeof rawValue === "number"
+      ? rawValue
+      : Number(normalizedValue.replace(/[^\d.-]/g, ""));
+
+  if (!Number.isFinite(value) || value < 0) {
+    return { error: "Giá vé không hợp lệ." } as const;
+  }
+
+  return { value } as const;
+}
+
+function parseAdminShowtimeDateTime(value: string) {
+  const rawValue = value.trim();
+
+  if (!rawValue) {
+    return null;
+  }
+
+  const localDateTimeMatch = rawValue.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/,
+  );
+
+  if (localDateTimeMatch) {
+    const [, year, month, day, hour, minute, second = "00"] = localDateTimeMatch;
+
+    return new Date(
+      `${year}-${month}-${day}T${hour}:${minute}:${second}.000+07:00`,
+    );
+  }
+
+  const parsedDate = new Date(rawValue);
+
+  return Number.isFinite(parsedDate.getTime()) ? parsedDate : null;
+}
+
+function parseAdminShowtimeDateTimeField(
+  body: JsonBody,
+  key: string,
+  fallback?: Date,
+) {
+  if (!(key in body)) {
+    return fallback ? ({ value: fallback } as const) : ({ value: null } as const);
+  }
+
+  const rawValue = stringField(body, key);
+
+  if (!rawValue) {
+    return { value: null } as const;
+  }
+
+  const value = parseAdminShowtimeDateTime(rawValue);
+
+  if (!value) {
+    return {
+      error: key === "startTime" ? "Thời gian bắt đầu không hợp lệ." : "Thời gian kết thúc không hợp lệ.",
+    } as const;
+  }
+
+  return { value } as const;
+}
+
+function numberBodyField(body: JsonBody, key: string) {
+  const value = body[key];
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  return Number.parseInt(String(value ?? ""), 10);
+}
+
+function serializeAdminShowtime(showtime: AdminShowtimeRecord) {
+  const basePrice = Number(showtime.basePrice);
+  const reservedSeats = showtime._count.bookingDetails + showtime._count.seatHolds;
+  const availableSeats = Math.max(showtime.room.totalSeats - reservedSeats, 0);
+
+  return {
+    id: showtime.id,
+    movieId: showtime.movieId,
+    movieTitle: showtime.movie.title,
+    movieSlug: showtime.movie.slug,
+    movieDuration: showtime.movie.duration,
+    movieLanguage: showtime.movie.language ?? "",
+    movieAgeLimit: showtime.movie.ageLimit ?? "",
+    roomId: showtime.roomId,
+    roomName: showtime.room.name,
+    totalSeats: showtime.room.totalSeats,
+    cinemaId: showtime.room.cinema.id,
+    cinemaName: showtime.room.cinema.name,
+    cinemaSlug: showtime.room.cinema.slug,
+    startTime: showtime.startTime.toISOString(),
+    endTime: showtime.endTime.toISOString(),
+    dateKey: getDateKey(showtime.startTime),
+    date: formatNullableDate(showtime.startTime) ?? "",
+    startLabel: formatDateTimeLabel(showtime.startTime),
+    endLabel: formatDateTimeLabel(showtime.endTime),
+    time: timeFormatter.format(showtime.startTime),
+    timeRange: `${timeFormatter.format(showtime.startTime)} - ${timeFormatter.format(showtime.endTime)}`,
+    basePrice,
+    price: formatCurrency(basePrice),
+    statusCode: showtime.status,
+    status: getAdminShowtimeStatusLabel(showtime.status),
+    bookedSeats: showtime._count.bookingDetails,
+    heldSeats: showtime._count.seatHolds,
+    ticketsSold: showtime._count.tickets,
+    availableSeats,
+    createdAt: showtime.createdAt.toISOString(),
+    updatedAt: showtime.updatedAt.toISOString(),
+  };
+}
+
+type AdminShowtimeSortMode = "schedule" | "recent";
+
+function getAdminShowtimeSortMode(request: IncomingMessage): AdminShowtimeSortMode {
+  const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  const sort = requestUrl.searchParams.get("sort");
+
+  return sort === "recent" ? "recent" : "schedule";
+}
+
+async function fetchAdminShowtimes(sortMode: AdminShowtimeSortMode = "schedule") {
+  return prisma.showtime.findMany({
+    orderBy:
+      sortMode === "recent"
+        ? [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }]
+        : [{ startTime: "desc" }, { id: "desc" }],
+    include: adminShowtimeInclude,
+  });
+}
+
+async function fetchAdminShowtimeById(showtimeId: number) {
+  return prisma.showtime.findUnique({
+    where: {
+      id: showtimeId,
+    },
+    include: adminShowtimeInclude,
+  });
+}
+
+async function fetchAdminShowtimeOptions() {
+  const [movies, rooms] = await Promise.all([
+    prisma.movie.findMany({
+      orderBy: {
+        title: "asc",
+      },
+      select: {
+        id: true,
+        title: true,
+        duration: true,
+      },
+    }),
+    prisma.room.findMany({
+      orderBy: [{ cinemaId: "asc" }, { name: "asc" }],
+      include: {
+        cinema: true,
+      },
+    }),
+  ]);
+
+  return {
+    movies: movies.map((movie) => ({
+      id: movie.id,
+      title: movie.title,
+      duration: movie.duration,
+    })),
+    rooms: rooms.map((room) => ({
+      id: room.id,
+      name: room.name,
+      totalSeats: room.totalSeats,
+      cinemaId: room.cinema.id,
+      cinemaName: room.cinema.name,
+    })),
+  };
+}
+
+async function findOverlappingAdminShowtime(params: {
+  roomId: number;
+  startTime: Date;
+  endTime: Date;
+  excludeShowtimeId?: number;
+}) {
+  const where: Prisma.ShowtimeWhereInput = {
+    roomId: params.roomId,
+    startTime: {
+      lt: params.endTime,
+    },
+    endTime: {
+      gt: params.startTime,
+    },
+  };
+
+  if (params.excludeShowtimeId) {
+    where.id = {
+      not: params.excludeShowtimeId,
+    };
+  }
+
+  return prisma.showtime.findFirst({
+    where,
+    orderBy: [{ startTime: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      startTime: true,
+      endTime: true,
+      movie: {
+        select: {
+          title: true,
+        },
+      },
+    },
+  });
+}
+
+function formatShowtimeConflictMessage(
+  conflictingShowtime: NonNullable<Awaited<ReturnType<typeof findOverlappingAdminShowtime>>>,
+) {
+  return `Phòng chiếu đã có suất "${conflictingShowtime.movie.title}" từ ${formatDateTimeLabel(
+    conflictingShowtime.startTime,
+  )} đến ${timeFormatter.format(
+    conflictingShowtime.endTime,
+  )}. Không thể tạo hai suất chiếu trùng hoặc giao nhau trong cùng phòng.`;
+}
+
+async function getAdminShowtimeRequestUser(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý lịch chiếu." });
+    return null;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền quản lý lịch chiếu." });
+    return null;
+  }
+
+  return user;
+}
+
+async function handleGetAdminShowtimes(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminShowtimeRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const [showtimeRecords, options] = await Promise.all([
+    fetchAdminShowtimes(getAdminShowtimeSortMode(request)),
+    fetchAdminShowtimeOptions(),
+  ]);
+  const showtimes = showtimeRecords.map(serializeAdminShowtime);
+  const todayKey = getDateKey(new Date());
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    showtimes,
+    options,
+    stats: {
+      totalShowtimes: showtimes.length,
+      todayShowtimes: showtimes.filter((showtime) => showtime.dateKey === todayKey).length,
+      activeShowtimes: showtimes.filter((showtime) => showtime.statusCode === "ACTIVE").length,
+      cancelledShowtimes: showtimes.filter((showtime) => showtime.statusCode === "CANCELLED").length,
+      finishedShowtimes: showtimes.filter((showtime) => showtime.statusCode === "FINISHED").length,
+      ticketsSold: showtimes.reduce((total, showtime) => total + showtime.ticketsSold, 0),
+    },
+  });
+}
+
+async function handleGetAdminShowtime(
+  request: IncomingMessage,
+  response: ServerResponse,
+  showtimeId: number,
+) {
+  const requestUser = await getAdminShowtimeRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const showtime = await fetchAdminShowtimeById(showtimeId);
+
+  if (!showtime) {
+    sendJson(response, 404, { message: "Không tìm thấy suất chiếu." });
+    return;
+  }
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    showtime: serializeAdminShowtime(showtime),
+  });
+}
+
+async function buildAdminShowtimeMutationData(
+  body: JsonBody,
+  existingShowtime?: AdminShowtimeRecord,
+) {
+  const movieId = numberBodyField(body, "movieId") || existingShowtime?.movieId || 0;
+  const roomId = numberBodyField(body, "roomId") || existingShowtime?.roomId || 0;
+
+  if (!movieId || !roomId) {
+    return { error: "Vui lòng chọn phim và phòng chiếu." } as const;
+  }
+
+  const [movie, room] = await Promise.all([
+    prisma.movie.findUnique({
+      where: {
+        id: movieId,
+      },
+      select: {
+        id: true,
+        duration: true,
+      },
+    }),
+    prisma.room.findUnique({
+      where: {
+        id: roomId,
+      },
+      select: {
+        id: true,
+      },
+    }),
+  ]);
+
+  if (!movie) {
+    return { error: "Phim được chọn không tồn tại." } as const;
+  }
+
+  if (!room) {
+    return { error: "Phòng chiếu được chọn không tồn tại." } as const;
+  }
+
+  const parsedStartTime = parseAdminShowtimeDateTimeField(
+    body,
+    "startTime",
+    existingShowtime?.startTime,
+  );
+  const parsedBasePrice = parsePositiveNumberField(
+    body,
+    "basePrice",
+    existingShowtime ? Number(existingShowtime.basePrice) : undefined,
+  );
+  const parsedStatus = parseAdminShowtimeStatus(body, existingShowtime?.status);
+
+  if ("error" in parsedStartTime) {
+    return { error: parsedStartTime.error } as const;
+  }
+
+  if ("error" in parsedBasePrice) {
+    return { error: parsedBasePrice.error } as const;
+  }
+
+  if ("error" in parsedStatus) {
+    return { error: parsedStatus.error } as const;
+  }
+
+  const startTime = parsedStartTime.value;
+
+  if (!startTime) {
+    return { error: "Vui lòng nhập thời gian bắt đầu." } as const;
+  }
+
+  const endTime = new Date(
+    startTime.getTime() + (movie.duration + showtimeChangeoverMinutes) * 60_000,
+  );
+
+  if (endTime <= startTime) {
+    return { error: "Thời gian kết thúc phải sau thời gian bắt đầu." } as const;
+  }
+
+  const overlappingShowtime = await findOverlappingAdminShowtime({
+    roomId,
+    startTime,
+    endTime,
+    excludeShowtimeId: existingShowtime?.id,
+  });
+
+  if (overlappingShowtime) {
+    return { error: formatShowtimeConflictMessage(overlappingShowtime) } as const;
+  }
+
+  return {
+    data: {
+      movieId,
+      roomId,
+      startTime,
+      endTime,
+      basePrice: parsedBasePrice.value,
+      status: parsedStatus.value,
+    },
+  } as const;
+}
+
+async function handleCreateAdminShowtime(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminShowtimeRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const result = await buildAdminShowtimeMutationData(body);
+
+  if ("error" in result) {
+    sendJson(response, 400, { message: result.error });
+    return;
+  }
+
+  let createdShowtime: AdminShowtimeRecord;
+
+  try {
+    createdShowtime = await prisma.showtime.create({
+      data: result.data,
+      include: adminShowtimeInclude,
+    });
+  } catch (error) {
+    if (isShowtimeOverlapConstraintError(error)) {
+      sendJson(response, 409, {
+        message:
+          "Phòng chiếu đã có phim trong khung giờ này. Vui lòng chọn phòng hoặc thời gian khác.",
+      });
+      return;
+    }
+
+    throw error;
+  }
+
+  sendJson(response, 201, {
+    message: "Thêm suất chiếu thành công.",
+    showtime: serializeAdminShowtime(createdShowtime),
+  });
+}
+
+async function handleUpdateAdminShowtime(
+  request: IncomingMessage,
+  response: ServerResponse,
+  showtimeId: number,
+) {
+  const requestUser = await getAdminShowtimeRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingShowtime = await fetchAdminShowtimeById(showtimeId);
+
+  if (!existingShowtime) {
+    sendJson(response, 404, { message: "Không tìm thấy suất chiếu cần cập nhật." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const result = await buildAdminShowtimeMutationData(body, existingShowtime);
+
+  if ("error" in result) {
+    sendJson(response, 400, { message: result.error });
+    return;
+  }
+
+  let updatedShowtime: AdminShowtimeRecord;
+
+  try {
+    updatedShowtime = await prisma.showtime.update({
+      where: {
+        id: existingShowtime.id,
+      },
+      data: result.data,
+      include: adminShowtimeInclude,
+    });
+  } catch (error) {
+    if (isShowtimeOverlapConstraintError(error)) {
+      sendJson(response, 409, {
+        message:
+          "Phòng chiếu đã có phim trong khung giờ này. Vui lòng chọn phòng hoặc thời gian khác.",
+      });
+      return;
+    }
+
+    throw error;
+  }
+
+  sendJson(response, 200, {
+    message: "Cập nhật suất chiếu thành công.",
+    showtime: serializeAdminShowtime(updatedShowtime),
+  });
+}
+
+async function handleDeleteAdminShowtime(
+  request: IncomingMessage,
+  response: ServerResponse,
+  showtimeId: number,
+) {
+  const requestUser = await getAdminShowtimeRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingShowtime = await prisma.showtime.findUnique({
+    where: {
+      id: showtimeId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!existingShowtime) {
+    sendJson(response, 404, { message: "Không tìm thấy suất chiếu cần xóa." });
+    return;
+  }
+
+  await prisma.showtime.delete({
+    where: {
+      id: existingShowtime.id,
+    },
+  });
+
+  sendJson(response, 200, {
+    message: "Xóa suất chiếu thành công.",
+    deletedId: existingShowtime.id,
   });
 }
 
@@ -1927,7 +3730,7 @@ async function fetchTicketBookingShowtimes() {
   await expireOverduePendingBookings();
   await refreshStaleTicketBookingShowtimes();
 
-  return prisma.showtime.findMany({
+  const showtimes = await prisma.showtime.findMany({
     where: {
       status: ShowtimeStatus.ACTIVE,
       startTime: {
@@ -1961,6 +3764,12 @@ async function fetchTicketBookingShowtimes() {
       room: {
         include: {
           cinema: true,
+          seats: {
+            select: {
+              id: true,
+              status: true,
+            },
+          },
         },
       },
       bookingDetails: {
@@ -1973,6 +3782,11 @@ async function fetchTicketBookingShowtimes() {
         },
         select: {
           seatId: true,
+          booking: {
+            select: {
+              status: true,
+            },
+          },
         },
       },
       seatHolds: {
@@ -1988,6 +3802,8 @@ async function fetchTicketBookingShowtimes() {
       },
     },
   });
+
+  return filterNonOverlappingShowtimeRecords(showtimes);
 }
 
 async function refreshStaleTicketBookingShowtimes() {
@@ -2106,7 +3922,9 @@ function serializeTicketBookingShowtime(showtime: TicketBookingShowtimeRecord) {
   }
 
   const totalSeats = showtime.room.totalSeats;
-  const availableSeats = Math.max(totalSeats - reservedSeatIds.size, 0);
+  const availableSeats = showtime.room.seats.filter(
+    (seat) => seat.status === "ACTIVE" && !reservedSeatIds.has(seat.id),
+  ).length;
   const basePrice = Number(showtime.basePrice);
 
   return {
@@ -2296,6 +4114,11 @@ async function fetchTicketBookingSeatMap(showtimeId: number) {
         },
         select: {
           seatId: true,
+          booking: {
+            select: {
+              status: true,
+            },
+          },
         },
       },
       seatHolds: {
@@ -2330,15 +4153,65 @@ function getSeatTypeLabel(name: string) {
   }
 }
 
+function getTicketBookingSeatAvailability(params: {
+  seatStatus: string;
+  isBooked: boolean;
+  isPendingPayment: boolean;
+}) {
+  if (params.isBooked) {
+    return {
+      status: "BOOKED",
+      label: "Đã đặt",
+      isAvailable: false,
+    };
+  }
+
+  if (params.isPendingPayment) {
+    return {
+      status: "PENDING_PAYMENT",
+      label: "Đang chờ thanh toán",
+      isAvailable: false,
+    };
+  }
+
+  if (params.seatStatus === "BROKEN") {
+    return {
+      status: "MAINTENANCE",
+      label: "Bảo trì",
+      isAvailable: false,
+    };
+  }
+
+  if (params.seatStatus === "LOCKED") {
+    return {
+      status: "LOCKED",
+      label: "Tạm khóa",
+      isAvailable: false,
+    };
+  }
+
+  return {
+    status: "AVAILABLE",
+    label: "Có thể chọn",
+    isAvailable: true,
+  };
+}
+
 function serializeTicketBookingSeatMap(showtime: TicketBookingSeatMapRecord) {
-  const reservedSeatIds = new Set<number>();
+  const bookedSeatIds = new Set<number>();
+  const pendingPaymentSeatIds = new Set<number>();
 
   for (const bookingDetail of showtime.bookingDetails) {
-    reservedSeatIds.add(bookingDetail.seatId);
+    if (bookingDetail.booking.status === BookingStatus.CONFIRMED) {
+      bookedSeatIds.add(bookingDetail.seatId);
+      continue;
+    }
+
+    pendingPaymentSeatIds.add(bookingDetail.seatId);
   }
 
   for (const seatHold of showtime.seatHolds) {
-    reservedSeatIds.add(seatHold.seatId);
+    pendingPaymentSeatIds.add(seatHold.seatId);
   }
 
   const showtimeForSerialization = {
@@ -2366,8 +4239,11 @@ function serializeTicketBookingSeatMap(showtime: TicketBookingSeatMapRecord) {
     },
     seats: showtime.room.seats.map((seat) => {
       const price = Number(seat.showtimePrices[0]?.price ?? showtime.basePrice);
-      const isReserved = reservedSeatIds.has(seat.id);
-      const isAvailable = seat.status === "ACTIVE" && !isReserved;
+      const availability = getTicketBookingSeatAvailability({
+        seatStatus: seat.status,
+        isBooked: bookedSeatIds.has(seat.id),
+        isPendingPayment: pendingPaymentSeatIds.has(seat.id),
+      });
 
       return {
         id: seat.id,
@@ -2375,14 +4251,12 @@ function serializeTicketBookingSeatMap(showtime: TicketBookingSeatMapRecord) {
         rowName: seat.rowName,
         seatNumber: seat.seatNumber,
         status: seat.status,
+        availabilityStatus: availability.status,
+        statusLabel: availability.label,
         price,
         priceLabel: formatCurrency(price),
-        isAvailable,
-        unavailableReason: isAvailable
-          ? null
-          : isReserved
-            ? "Đã có người đặt"
-            : "Ghế không khả dụng",
+        isAvailable: availability.isAvailable,
+        unavailableReason: availability.isAvailable ? null : availability.label,
         type: {
           id: seat.seatType.id,
           name: seat.seatType.name,
@@ -2431,6 +4305,144 @@ async function createUniqueBookingCode() {
   throw new Error("Không thể tạo mã đơn hàng.");
 }
 
+type PromotionValidationResult =
+  | {
+      ok: true;
+      promotion: Promotion;
+      discountAmount: number;
+      finalAmount: number;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+function normalizePromotionCode(code: string) {
+  return code.trim().toUpperCase();
+}
+
+function calculatePromotionDiscount(totalAmount: number, promotion: Promotion) {
+  if (promotion.type === "PERCENT") {
+    const rawDiscount = Math.round((totalAmount * (promotion.discountPercent ?? 0)) / 100);
+    const maxDiscount =
+      promotion.maxDiscount === null ? rawDiscount : Number(promotion.maxDiscount);
+
+    return Math.min(rawDiscount, maxDiscount, totalAmount);
+  }
+
+  return Math.min(Number(promotion.discountAmount ?? 0), totalAmount);
+}
+
+async function validateTicketBookingPromotion(
+  code: string,
+  totalAmount: number,
+): Promise<PromotionValidationResult> {
+  const normalizedCode = normalizePromotionCode(code);
+
+  if (!normalizedCode) {
+    return {
+      ok: false,
+      message: "Vui lòng nhập mã giảm giá.",
+    };
+  }
+
+  if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+    return {
+      ok: false,
+      message: "Vui lòng chọn ghế trước khi áp dụng mã giảm giá.",
+    };
+  }
+
+  const promotion = await prisma.promotion.findUnique({
+    where: {
+      code: normalizedCode,
+    },
+  });
+
+  if (!promotion) {
+    return {
+      ok: false,
+      message: "Mã giảm giá không tồn tại.",
+    };
+  }
+
+  const now = new Date();
+
+  if (!promotion.isActive || promotion.startDate > now || promotion.endDate < now) {
+    return {
+      ok: false,
+      message: "Mã giảm giá không còn hiệu lực.",
+    };
+  }
+
+  if (promotion.usedQuantity >= promotion.quantity) {
+    return {
+      ok: false,
+      message: "Mã giảm giá đã hết lượt sử dụng.",
+    };
+  }
+
+  const minOrderAmount = Number(promotion.minOrderAmount ?? 0);
+
+  if (totalAmount < minOrderAmount) {
+    return {
+      ok: false,
+      message: `Mã giảm giá chỉ áp dụng cho đơn từ ${formatCurrency(minOrderAmount)}.`,
+    };
+  }
+
+  const discountAmount = calculatePromotionDiscount(totalAmount, promotion);
+
+  if (discountAmount <= 0) {
+    return {
+      ok: false,
+      message: "Mã giảm giá không áp dụng được cho đơn hàng này.",
+    };
+  }
+
+  return {
+    ok: true,
+    promotion,
+    discountAmount,
+    finalAmount: Math.max(totalAmount - discountAmount, 0),
+  };
+}
+
+function serializeTicketBookingPromotion(
+  result: Extract<PromotionValidationResult, { ok: true }>,
+  totalAmount: number,
+) {
+  return {
+    message: `Đã áp dụng mã ${result.promotion.code}.`,
+    code: result.promotion.code,
+    name: result.promotion.name,
+    description: result.promotion.description,
+    discountAmount: result.discountAmount,
+    discountLabel: formatCurrency(result.discountAmount),
+    totalAmount,
+    totalLabel: formatCurrency(totalAmount),
+    finalAmount: result.finalAmount,
+    finalLabel: formatCurrency(result.finalAmount),
+  };
+}
+
+async function handleApplyTicketBookingPromotion(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const body = await readJson(request);
+  const code = stringField(body, "code");
+  const totalAmount = Number(body.totalAmount);
+  const result = await validateTicketBookingPromotion(code, totalAmount);
+
+  if (result.ok === false) {
+    sendJson(response, 400, { message: result.message });
+    return;
+  }
+
+  sendJson(response, 200, serializeTicketBookingPromotion(result, totalAmount));
+}
+
 async function handleCreateTicketBooking(request: IncomingMessage, response: ServerResponse) {
   const user = await getAuthenticatedUser(request);
 
@@ -2444,6 +4456,7 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
   const rawSeatIds = Array.isArray(body.seatIds) ? body.seatIds : [];
   const seatIds = [...new Set(rawSeatIds.map((value) => Number(value)).filter(Number.isInteger))];
   const paymentMethod = stringField(body, "paymentMethod").toUpperCase();
+  const promotionCode = normalizePromotionCode(stringField(body, "promotionCode"));
 
   if (!Number.isInteger(showtimeId) || showtimeId < 1) {
     sendJson(response, 400, { message: "Suất chiếu không hợp lệ." });
@@ -2555,6 +4568,18 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
     };
   });
   const totalAmount = lineItems.reduce((total, item) => total + item.price, 0);
+  const promotionResult = promotionCode
+    ? await validateTicketBookingPromotion(promotionCode, totalAmount)
+    : null;
+
+  if (promotionResult && promotionResult.ok === false) {
+    sendJson(response, 400, { message: promotionResult.message });
+    return;
+  }
+
+  const appliedPromotion = promotionResult?.ok ? promotionResult : null;
+  const discountAmount = appliedPromotion?.discountAmount ?? 0;
+  const finalAmount = appliedPromotion?.finalAmount ?? totalAmount;
   const bookingCode = await createUniqueBookingCode();
 
   try {
@@ -2564,8 +4589,8 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
           userId: user.id,
           bookingCode,
           totalAmount,
-          discountAmount: 0,
-          finalAmount: totalAmount,
+          discountAmount,
+          finalAmount,
           status: "PENDING",
           note: "Đơn hàng được tạo từ trang đặt vé.",
         },
@@ -2580,12 +4605,47 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
         })),
       });
 
+      if (appliedPromotion) {
+        const promotionUpdate = await tx.promotion.updateMany({
+          where: {
+            id: appliedPromotion.promotion.id,
+            isActive: true,
+            startDate: {
+              lte: new Date(),
+            },
+            endDate: {
+              gte: new Date(),
+            },
+            usedQuantity: {
+              lt: appliedPromotion.promotion.quantity,
+            },
+          },
+          data: {
+            usedQuantity: {
+              increment: 1,
+            },
+          },
+        });
+
+        if (promotionUpdate.count !== 1) {
+          throw new Error("PROMOTION_UNAVAILABLE");
+        }
+
+        await tx.bookingPromotion.create({
+          data: {
+            bookingId: createdBooking.id,
+            promotionId: appliedPromotion.promotion.id,
+            discountAmount,
+          },
+        });
+      }
+
       await tx.payment.create({
         data: {
           bookingId: createdBooking.id,
           method: paymentMethod as (typeof paymentMethods)[number],
           status: "PENDING",
-          amount: totalAmount,
+          amount: finalAmount,
           transactionCode: `${bookingCode}-${paymentMethod}`,
           paymentUrl: null,
         },
@@ -2602,7 +4662,14 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
         paymentDeadlineAt: new Date(Date.now() + pendingPaymentWindowMs).toISOString(),
       },
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "PROMOTION_UNAVAILABLE") {
+      sendJson(response, 409, {
+        message: "Mã giảm giá vừa hết hiệu lực hoặc hết lượt sử dụng. Vui lòng áp dụng lại.",
+      });
+      return;
+    }
+
     sendJson(response, 409, {
       message: "Một hoặc nhiều ghế vừa được đặt bởi người khác. Vui lòng chọn lại ghế.",
     });
@@ -2645,8 +4712,21 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/booking/promotions/apply") {
+      await handleApplyTicketBookingPromotion(request, response);
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/api/booking/checkout") {
       await handleCreateTicketBooking(request, response);
+      return;
+    }
+
+    const movieReviewMatch = requestUrl.pathname.match(/^\/api\/movies\/(\d+)\/reviews$/);
+
+    if (request.method === "POST" && movieReviewMatch) {
+      const movieId = Number.parseInt(movieReviewMatch[1], 10);
+      await handleCreateMovieReview(request, response, movieId);
       return;
     }
 
@@ -2666,7 +4746,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/movies/now-showing") {
-      const movieCatalogData = await loadMovieCatalogData("NOW_SHOWING", {
+      const catalogDateRange = getCatalogDateRange(requestUrl.searchParams);
+      const movieCatalogData = await loadNowShowingCatalogData({
         page: positiveIntegerParam(requestUrl.searchParams, "page", 1),
         pageSize: positiveIntegerParam(
           requestUrl.searchParams,
@@ -2674,12 +4755,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           catalogPageSize,
           maxCatalogPageSize,
         ),
+        dateRange: catalogDateRange ?? undefined,
       });
       sendJson(response, 200, movieCatalogData);
       return;
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/movies/coming-soon") {
+      const catalogDateRange = getCatalogDateRange(requestUrl.searchParams);
       const movieCatalogData = await loadMovieCatalogData("COMING_SOON", {
         page: positiveIntegerParam(requestUrl.searchParams, "page", 1),
         pageSize: positiveIntegerParam(
@@ -2688,6 +4771,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           catalogPageSize,
           maxCatalogPageSize,
         ),
+        releaseDateRange: catalogDateRange ?? undefined,
       });
       sendJson(response, 200, movieCatalogData);
       return;
@@ -2713,6 +4797,36 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/movies") {
+      await handleGetAdminMovies(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/admin/movies") {
+      await handleCreateAdminMovie(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/admin/movies/upload-image") {
+      await handleUploadAdminMovieImage(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/genres") {
+      await handleGetAdminGenres(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/showtimes") {
+      await handleGetAdminShowtimes(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/admin/showtimes") {
+      await handleCreateAdminShowtime(request, response);
+      return;
+    }
+
     const adminAccountMatch = requestUrl.pathname.match(/^\/api\/admin\/accounts\/(\d+)$/);
 
     if (adminAccountMatch) {
@@ -2725,6 +4839,48 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
       if (request.method === "DELETE") {
         await handleDeleteAdminAccount(request, response, accountId);
+        return;
+      }
+    }
+
+    const adminMovieMatch = requestUrl.pathname.match(/^\/api\/admin\/movies\/(\d+)$/);
+
+    if (adminMovieMatch) {
+      const movieId = Number.parseInt(adminMovieMatch[1], 10);
+
+      if (request.method === "GET") {
+        await handleGetAdminMovie(request, response, movieId);
+        return;
+      }
+
+      if (request.method === "PUT") {
+        await handleUpdateAdminMovie(request, response, movieId);
+        return;
+      }
+
+      if (request.method === "DELETE") {
+        await handleDeleteAdminMovie(request, response, movieId);
+        return;
+      }
+    }
+
+    const adminShowtimeMatch = requestUrl.pathname.match(/^\/api\/admin\/showtimes\/(\d+)$/);
+
+    if (adminShowtimeMatch) {
+      const showtimeId = Number.parseInt(adminShowtimeMatch[1], 10);
+
+      if (request.method === "GET") {
+        await handleGetAdminShowtime(request, response, showtimeId);
+        return;
+      }
+
+      if (request.method === "PUT") {
+        await handleUpdateAdminShowtime(request, response, showtimeId);
+        return;
+      }
+
+      if (request.method === "DELETE") {
+        await handleDeleteAdminShowtime(request, response, showtimeId);
         return;
       }
     }

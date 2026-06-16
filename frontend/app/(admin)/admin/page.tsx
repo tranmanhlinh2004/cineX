@@ -189,6 +189,15 @@ export default function AdminDashboardPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <Link
+            href="/ticket-booking?source=admin-counter"
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white shadow-sm shadow-red-600/20 transition hover:bg-red-700"
+            aria-label="Tạo đơn hàng tại quầy"
+          >
+            <Ticket size={17} />
+            Tạo đơn hàng
+          </Link>
+
           <div className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 shadow-sm">
             <CalendarClock size={17} className="text-red-600" />
             Năm 2026

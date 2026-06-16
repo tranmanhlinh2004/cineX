@@ -1,9 +1,13 @@
 import MovieCatalogPage from "@/components/MovieCatalogPage";
-import { getComingSoonPageData } from "@/lib/home-movies";
+import {
+  getComingSoonPageData,
+  normalizeMovieCatalogDateParam,
+} from "@/lib/home-movies";
 
 type MoviePageProps = {
   searchParams?: Promise<{
     page?: string | string[];
+    date?: string | string[];
   }>;
 };
 
@@ -16,8 +20,10 @@ function parsePageParam(value?: string | string[]) {
 
 export default async function ComingSoonPage({ searchParams }: MoviePageProps) {
   const params = await searchParams;
+  const date = normalizeMovieCatalogDateParam(params?.date);
   const catalogData = await getComingSoonPageData({
     page: parsePageParam(params?.page),
+    date,
   });
 
   return (
@@ -26,6 +32,7 @@ export default async function ComingSoonPage({ searchParams }: MoviePageProps) {
       pagination={catalogData.pagination}
       variant="soon"
       error={catalogData.error}
+      date={date}
     />
   );
 }

@@ -75,7 +75,7 @@ async function requestAdmin<T>(path: string, options: RequestAdminOptions = {}) 
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
   } catch {
-    throw new Error("Không kết nối được backend. Hãy chạy backend ở cổng 4000.");
+    throw new Error("Không kết nối được backend.");
   }
 
   const data = (await response.json().catch(() => null)) as

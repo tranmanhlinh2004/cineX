@@ -1,10 +1,12 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api";
+const catalogDateParamPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 export type MovieStatusCode = "COMING_SOON" | "NOW_SHOWING" | "ENDED";
 
 export type HomeReview = {
   id: number;
+  userId: number;
   rating: number;
   comment: string | null;
   createdAt: string;
@@ -143,7 +145,29 @@ export type MovieCatalogPagination = {
 export type MovieCatalogParams = {
   page?: number;
   pageSize?: number;
+  date?: string;
 };
+
+export function normalizeMovieCatalogDateParam(value?: string | string[]) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+
+  if (!rawValue || !catalogDateParamPattern.test(rawValue)) {
+    return undefined;
+  }
+
+  const [year, month, day] = rawValue.split("-").map(Number);
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+
+  return rawValue;
+}
 
 function createEmptyHomePageData(error?: string): HomePageData {
   return {
@@ -170,7 +194,7 @@ export async function getHomePageData(): Promise<HomePageData> {
     });
   } catch {
     return createEmptyHomePageData(
-      "Không kết nối được backend. Hãy chạy backend ở cổng 4000.",
+      "Không kết nối được backend.",
     );
   }
 
@@ -222,6 +246,10 @@ function buildCatalogPath(path: string, params: MovieCatalogParams = {}) {
     searchParams.set("pageSize", String(params.pageSize));
   }
 
+  if (params.date) {
+    searchParams.set("date", params.date);
+  }
+
   const query = searchParams.toString();
 
   return query ? `${path}?${query}` : path;
@@ -239,7 +267,7 @@ async function getMovieCatalogData(
     });
   } catch {
     return createEmptyMovieCatalogData(
-      "Không kết nối được backend. Hãy chạy backend ở cổng 4000.",
+      "Không kết nối được backend.",
     );
   }
 

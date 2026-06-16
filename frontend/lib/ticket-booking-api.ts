@@ -93,6 +93,13 @@ export type TicketBookingSeat = {
   rowName: string;
   seatNumber: number;
   status: string;
+  availabilityStatus:
+    | "AVAILABLE"
+    | "BOOKED"
+    | "PENDING_PAYMENT"
+    | "MAINTENANCE"
+    | "LOCKED";
+  statusLabel: string;
   price: number;
   priceLabel: string;
   isAvailable: boolean;
@@ -128,6 +135,19 @@ export type TicketBookingCheckoutResponse = {
   };
 };
 
+export type TicketBookingPromotionPreview = {
+  message: string;
+  code: string;
+  name: string;
+  description: string | null;
+  discountAmount: number;
+  discountLabel: string;
+  totalAmount: number;
+  totalLabel: string;
+  finalAmount: number;
+  finalLabel: string;
+};
+
 async function requestJson<T>(
   path: string,
   options: {
@@ -159,7 +179,7 @@ async function requestJson<T>(
       body: options.payload ? JSON.stringify(options.payload) : undefined,
     });
   } catch {
-    throw new Error("Không kết nối được backend. Hãy chạy backend ở cổng 4000.");
+    throw new Error("Không kết nối được backend.");
   }
 
   const data = (await response.json().catch(() => null)) as ({ message?: string } & T) | null;
@@ -179,10 +199,21 @@ export function getTicketBookingSeatMap(showtimeId: number) {
   return requestJson<TicketBookingSeatMap>(`/booking/showtimes/${showtimeId}/seats`);
 }
 
+export function applyTicketBookingPromotion(payload: {
+  code: string;
+  totalAmount: number;
+}) {
+  return requestJson<TicketBookingPromotionPreview>("/booking/promotions/apply", {
+    method: "POST",
+    payload,
+  });
+}
+
 export function createTicketBooking(payload: {
   showtimeId: number;
   seatIds: number[];
   paymentMethod: TicketPaymentMethodCode;
+  promotionCode?: string;
 }) {
   return requestJson<TicketBookingCheckoutResponse>("/booking/checkout", {
     method: "POST",
