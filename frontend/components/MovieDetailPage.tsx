@@ -16,57 +16,12 @@ import {
 import MovieRecommendationsSection from "@/components/MovieRecommendationsSection";
 import MovieReviewsSection from "@/components/MovieReviewsSection";
 import type { HomeMovie } from "@/lib/home-movies";
+import { getYouTubeEmbedUrl } from "@/lib/youtube";
 
 type MovieDetailPageProps = {
   movie: HomeMovie | null;
   error?: string;
 };
-
-function getYouTubeEmbedUrl(url: string | null) {
-  if (!url) {
-    return null;
-  }
-
-  try {
-    const parsedUrl = new URL(url);
-    const host = parsedUrl.hostname.replace(/^www\./, "");
-
-    if (host === "youtu.be") {
-      const videoId = parsedUrl.pathname.split("/").filter(Boolean)[0];
-      return videoId ? `https://www.youtube.com/embed/${videoId}` : null;
-    }
-
-    if (host.endsWith("youtube.com")) {
-      const watchId = parsedUrl.searchParams.get("v");
-
-      if (watchId) {
-        return `https://www.youtube.com/embed/${watchId}`;
-      }
-
-      const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
-      const embeddedId =
-        pathParts[0] === "embed" || pathParts[0] === "shorts"
-          ? pathParts[1]
-          : null;
-
-      if (embeddedId) {
-        return `https://www.youtube.com/embed/${embeddedId}`;
-      }
-
-      const searchQuery = parsedUrl.searchParams.get("search_query");
-
-      if (parsedUrl.pathname === "/results" && searchQuery) {
-        return `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(
-          searchQuery,
-        )}`;
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
 
 function splitDescription(description: string) {
   const normalized = description.trim();
@@ -197,7 +152,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
                 <MovieFact label="Diễn viên" value={movie.actors} />
                 <MovieFact label="Thể loại" value={movie.genres.join(", ")} />
                 <MovieFact label="Thời lượng" value={movie.duration} />
-                <MovieFact label="Năm sản xuất" value={movie.releaseDate} />
+                <MovieFact label="Ngày khởi chiếu" value={movie.releaseDate} />
                 <MovieFact label="Ngôn ngữ" value={movie.language} />
                 <MovieFact label="Quốc gia" value={movie.country} />
                 <MovieFact label="Đánh giá" value={`${movie.reviewCount} review`} />

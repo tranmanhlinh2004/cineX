@@ -36,9 +36,27 @@ type BookingPaymentPayload = {
   method: PaymentMethodCode;
 };
 
+type RefundRequestPayload = {
+  reason: string;
+};
+
 export type PaymentMethodCode = "CASH" | "MOMO" | "VNPAY" | "ZALOPAY" | "BANKING" | "CARD";
 export type PaymentStatusCode = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED";
 export type BookingStatusCode = "PENDING" | "CONFIRMED" | "CANCELLED" | "EXPIRED";
+export type RefundStatusCode = "PENDING" | "APPROVED" | "REJECTED";
+
+export type BookingRefundRequest = {
+  id: number;
+  refundCode: string;
+  reason: string;
+  status: RefundStatusCode;
+  statusLabel: string;
+  amount: number;
+  amountLabel: string;
+  requestedAt: string;
+  reviewedAt: string | null;
+  reviewerNote: string | null;
+};
 
 export type BookingHistoryItem = {
   id: number;
@@ -111,14 +129,53 @@ export type BookingHistoryItem = {
     qrCode: string | null;
     status: string;
   }[];
+  refund: {
+    canRequest: boolean;
+    windowSeconds: number;
+    requestDeadlineAt: string;
+    remainingSeconds: number;
+    reasonOptions: readonly string[];
+    request: BookingRefundRequest | null;
+  };
   createdAt: string;
   updatedAt: string;
 };
 
 export type BookingHistoryResponse = {
   paymentWindowSeconds: number;
+  refundWindowSeconds: number;
+  refundReasonOptions: readonly string[];
   paymentMethods: PaymentMethodCode[];
   bookings: BookingHistoryItem[];
+};
+
+export type RefundRequestResponse = {
+  message: string;
+  refundRequest: {
+    id: number;
+    refundCode: string;
+    status: RefundStatusCode;
+    statusLabel: string;
+    requestedAt: string;
+  };
+  booking: BookingHistoryItem | null;
+};
+
+export type AccountNotification = {
+  id: number;
+  title: string;
+  message: string;
+  type: "INFO" | "REFUND_APPROVED" | "REFUND_REJECTED";
+  isRead: boolean;
+  metadata: unknown;
+  readAt: string | null;
+  createdAt: string;
+};
+
+export type AccountNotificationsResponse = {
+  generatedAt: string;
+  unreadCount: number;
+  notifications: AccountNotification[];
 };
 
 async function postAuth(path: string, payload: LoginPayload | RegisterPayload) {
@@ -157,7 +214,7 @@ async function requestAccount<T>(
   path: string,
   options: {
     method?: "GET" | "POST" | "PUT";
-    payload?: ProfilePayload | PasswordPayload | BookingPaymentPayload;
+    payload?: ProfilePayload | PasswordPayload | BookingPaymentPayload | RefundRequestPayload;
   } = {},
 ) {
   const token = getAuthToken();
@@ -232,4 +289,21 @@ export function payBooking(bookingId: number, payload: BookingPaymentPayload) {
       payload,
     },
   );
+}
+
+export function requestBookingRefund(bookingId: number, payload: RefundRequestPayload) {
+  return requestAccount<RefundRequestResponse>(`/account/bookings/${bookingId}/refund`, {
+    method: "POST",
+    payload,
+  });
+}
+
+export function getAccountNotifications() {
+  return requestAccount<AccountNotificationsResponse>("/account/notifications");
+}
+
+export function markAllNotificationsRead() {
+  return requestAccount<{ message: string }>("/account/notifications/read-all", {
+    method: "POST",
+  });
 }

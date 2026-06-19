@@ -23,6 +23,7 @@ import {
   type AdminMovieRecord,
   type AdminMovieStatusCode,
 } from "@/lib/admin-movies-api";
+import { normalizeYouTubeTrailerUrl } from "@/lib/youtube";
 
 type MovieFormPageProps = {
   mode: "create" | "edit";
@@ -93,7 +94,7 @@ function buildMoviePayload(formData: FormData): AdminMoviePayload {
     genre,
     genres: genre ? [genre] : [],
     description: getFormString(formData, "description"),
-    trailerUrl: getFormString(formData, "trailerUrl"),
+    trailerUrl: normalizeYouTubeTrailerUrl(getFormString(formData, "trailerUrl")),
     durationMinutes: Number.isFinite(durationMinutes) ? durationMinutes : 0,
     country: getFormString(formData, "country"),
     ageRating: getFormString(formData, "ageRating"),

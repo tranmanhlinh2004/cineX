@@ -6,6 +6,7 @@ import {
   Bell,
   ChevronDown,
   History,
+  Loader2,
   LogOut,
   Menu,
   QrCode,
@@ -22,6 +23,11 @@ import {
   getAuthUser,
   type AuthUser,
 } from "@/lib/auth";
+import {
+  getAccountNotifications,
+  markAllNotificationsRead,
+  type AccountNotification,
+} from "@/lib/auth-api";
 import { createLoadingPath } from "@/lib/navigation";
 
 const navItems = [
@@ -42,12 +48,27 @@ const accountMenuItems = [
   { label: "QR code vé của tôi", href: "/account/tickets", icon: QrCode },
 ];
 
+const notificationDateTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
+  timeZone: "Asia/Ho_Chi_Minh",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 export default function Header() {
   const pathname = usePathname();
   const router = useRouter();
   const [openMenu, setOpenMenu] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationError, setNotificationError] = useState("");
+  const [notifications, setNotifications] = useState<AccountNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const isAuthPage = authRoutes.includes(pathname);
   const showAuthActions = !isAuthPage;
@@ -63,6 +84,9 @@ export default function Header() {
 
       if (!user) {
         setOpenMenu(false);
+        setNotificationsOpen(false);
+        setNotifications([]);
+        setUnreadCount(0);
       }
     };
 
@@ -93,7 +117,52 @@ export default function Header() {
     clearAuthUser();
     setAuthUser(null);
     setOpenMenu(false);
+    setNotificationsOpen(false);
+    setNotifications([]);
+    setUnreadCount(0);
     router.replace(createLoadingPath("/"));
+  };
+
+  const loadNotifications = async () => {
+    if (!getAuthToken()) {
+      return;
+    }
+
+    setNotificationsLoading(true);
+    setNotificationError("");
+
+    try {
+      const data = await getAccountNotifications();
+
+      setNotifications(data.notifications);
+      setUnreadCount(data.unreadCount);
+
+      if (data.unreadCount > 0) {
+        await markAllNotificationsRead();
+        setUnreadCount(0);
+        setNotifications((current) =>
+          current.map((notification) => ({ ...notification, isRead: true })),
+        );
+      }
+    } catch (error) {
+      setNotificationError(
+        error instanceof Error ? error.message : "Không thể tải thông báo.",
+      );
+    } finally {
+      setNotificationsLoading(false);
+    }
+  };
+
+  const handleNotificationToggle = () => {
+    setNotificationsOpen((current) => {
+      const nextOpen = !current;
+
+      if (nextOpen) {
+        void loadNotifications();
+      }
+
+      return nextOpen;
+    });
   };
 
   const authButtons = (
@@ -115,16 +184,31 @@ export default function Header() {
   );
 
   const userActions = (
-    <div className="group relative flex h-14 items-center gap-3 rounded-full bg-[#1f1f1f] px-4 pr-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+    <div className="flex items-center gap-3">
+      <div className="relative">
       <button
         type="button"
         aria-label="Thông báo"
+        aria-expanded={notificationsOpen}
+        onClick={handleNotificationToggle}
         className="relative flex h-10 w-10 items-center justify-center rounded-full text-red-500 transition hover:bg-white/10"
       >
         <Bell size={21} fill="currentColor" strokeWidth={2.2} />
-        <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-[#1f1f1f] bg-red-500" />
+        {unreadCount > 0 ? (
+          <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-[#121212] bg-red-500" />
+        ) : null}
       </button>
 
+      {notificationsOpen ? (
+        <NotificationDropdown
+          notifications={notifications}
+          isLoading={notificationsLoading}
+          error={notificationError}
+        />
+      ) : null}
+      </div>
+
+      <div className="group relative flex h-14 items-center gap-3 rounded-full bg-[#1f1f1f] px-4 pr-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
       <Link
         href="/account/profile"
         aria-label="Thông tin cá nhân"
@@ -190,6 +274,7 @@ export default function Header() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 
@@ -357,4 +442,67 @@ export default function Header() {
       )}
     </header>
   );
+}
+
+function NotificationDropdown({
+  notifications,
+  isLoading,
+  error,
+}: {
+  notifications: AccountNotification[];
+  isLoading: boolean;
+  error: string;
+}) {
+  return (
+    <div className="absolute right-0 top-full z-50 mt-3 w-[min(360px,calc(100vw-24px))] overflow-hidden rounded-md border border-white/10 bg-[#1b1b1b] shadow-2xl">
+      <div className="border-b border-white/10 px-4 py-3">
+        <p className="text-sm font-black text-white">Thông báo</p>
+      </div>
+
+      <div className="max-h-[420px] overflow-y-auto">
+        {isLoading ? (
+          <div className="flex items-center gap-2 px-4 py-5 text-sm font-bold text-white/60">
+            <Loader2 size={17} className="animate-spin" />
+            Đang tải thông báo...
+          </div>
+        ) : error ? (
+          <div className="px-4 py-5 text-sm font-bold text-red-200">{error}</div>
+        ) : notifications.length === 0 ? (
+          <div className="px-4 py-5 text-sm font-bold text-white/55">
+            Chưa có thông báo mới.
+          </div>
+        ) : (
+          <div className="grid">
+            {notifications.map((notification) => (
+              <article
+                key={notification.id}
+                className="border-b border-white/8 px-4 py-3 last:border-b-0"
+              >
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                      notification.isRead ? "bg-white/20" : "bg-red-500"
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-black text-white">{notification.title}</p>
+                    <p className="mt-1 text-sm leading-5 text-white/65">
+                      {notification.message}
+                    </p>
+                    <p className="mt-2 text-xs font-bold text-white/35">
+                      {formatNotificationDateTime(notification.createdAt)}
+                    </p>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatNotificationDateTime(value: string) {
+  return notificationDateTimeFormatter.format(new Date(value)).replace(",", "");
 }

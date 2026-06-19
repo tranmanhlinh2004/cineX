@@ -1,6 +1,5 @@
-import AdminModulePage from "@/components/admin/AdminModulePage";
-import { adminMenuPageConfigs } from "@/components/admin/admin-menu-page-configs";
+import AdminInvoicesPageClient from "./AdminInvoicesPageClient";
 
 export default function AdminInvoicesPage() {
-  return <AdminModulePage {...adminMenuPageConfigs.invoices} />;
+  return <AdminInvoicesPageClient />;
 }

@@ -14,12 +14,15 @@ import {
   MapPin,
   RefreshCw,
   Ticket,
+  Undo2,
   User,
+  XCircle,
 } from "lucide-react";
 import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import {
   getBookingHistory,
   payBooking,
+  requestBookingRefund,
   type BookingHistoryItem,
   type PaymentMethodCode,
 } from "@/lib/auth-api";
@@ -59,6 +62,9 @@ export default function BookingHistoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [payingBookingId, setPayingBookingId] = useState<number | null>(null);
+  const [refundingBookingId, setRefundingBookingId] = useState<number | null>(null);
+  const [refundModalBooking, setRefundModalBooking] = useState<BookingHistoryItem | null>(null);
+  const [selectedRefundReason, setSelectedRefundReason] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -192,6 +198,51 @@ export default function BookingHistoryPage() {
     }
   };
 
+  const openRefundModal = (booking: BookingHistoryItem) => {
+    const defaultReason = booking.refund.reasonOptions[0] ?? "Không còn nhu cầu đặt vé";
+
+    setRefundModalBooking(booking);
+    setSelectedRefundReason(defaultReason);
+    setNotice(null);
+  };
+
+  const handleSubmitRefundRequest = async () => {
+    if (!refundModalBooking || !selectedRefundReason) {
+      return;
+    }
+
+    setRefundingBookingId(refundModalBooking.id);
+    setNotice(null);
+
+    try {
+      const result = await requestBookingRefund(refundModalBooking.id, {
+        reason: selectedRefundReason,
+      });
+
+      if (result.booking) {
+        setBookings((current) =>
+          current.map((item) => (item.id === result.booking?.id ? result.booking : item)),
+        );
+      } else {
+        await loadBookings({ silent: true });
+      }
+
+      setNotice({ type: "success", text: result.message });
+      setRefundModalBooking(null);
+    } catch (error) {
+      setNotice({
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Không thể gửi yêu cầu hoàn tiền.",
+      });
+      await loadBookings({ silent: true });
+    } finally {
+      setRefundingBookingId(null);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[#0d0f12] px-4 py-8 text-white sm:px-6 lg:px-8">
       <section className="mx-auto max-w-[1320px]">
@@ -261,7 +312,13 @@ export default function BookingHistoryPage() {
 
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {bookings.map((booking) => (
-                  <MovieBookingCard key={booking.id} booking={booking} now={now} />
+                  <MovieBookingCard
+                    key={booking.id}
+                    booking={booking}
+                    now={now}
+                    refundingBookingId={refundingBookingId}
+                    onRequestRefund={openRefundModal}
+                  />
                 ))}
               </div>
             </section>
@@ -277,7 +334,7 @@ export default function BookingHistoryPage() {
               </div>
 
               <div className="overflow-x-auto">
-                <table className="min-w-[1120px] w-full border-collapse text-left text-sm">
+                <table className="min-w-[1240px] w-full border-collapse text-left text-sm">
                   <thead className="bg-[#20324b] text-white">
                     <tr>
                       <TableHead>Mã đơn hàng</TableHead>
@@ -287,6 +344,7 @@ export default function BookingHistoryPage() {
                       <TableHead>Trạng thái thanh toán</TableHead>
                       <TableHead>Phương thức thanh toán</TableHead>
                       <TableHead>Thanh toán</TableHead>
+                      <TableHead>Hoàn tiền</TableHead>
                     </tr>
                   </thead>
                   <tbody>
@@ -362,6 +420,14 @@ export default function BookingHistoryPage() {
                               Thanh toán
                             </button>
                           </TableCell>
+                          <TableCell>
+                            <RefundAction
+                              booking={booking}
+                              now={now}
+                              isSubmitting={refundingBookingId === booking.id}
+                              onRequestRefund={openRefundModal}
+                            />
+                          </TableCell>
                         </tr>
                       );
                     })}
@@ -372,6 +438,18 @@ export default function BookingHistoryPage() {
           </>
         )}
       </section>
+
+      {refundModalBooking ? (
+        <RefundRequestModal
+          booking={refundModalBooking}
+          now={now}
+          selectedReason={selectedRefundReason}
+          isSubmitting={refundingBookingId === refundModalBooking.id}
+          onReasonChange={setSelectedRefundReason}
+          onSubmit={() => void handleSubmitRefundRequest()}
+          onClose={() => setRefundModalBooking(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -408,9 +486,13 @@ function StatBox({
 function MovieBookingCard({
   booking,
   now,
+  refundingBookingId,
+  onRequestRefund,
 }: {
   booking: BookingHistoryItem;
   now: number;
+  refundingBookingId: number | null;
+  onRequestRefund: (booking: BookingHistoryItem) => void;
 }) {
   const remainingSeconds = getRemainingSeconds(booking, now);
 
@@ -444,6 +526,13 @@ function MovieBookingCard({
           <span className="text-sm font-black text-white">{booking.amounts.finalLabel}</span>
           <PaymentStatusLabel booking={booking} remainingSeconds={remainingSeconds} compact />
         </div>
+        <RefundAction
+          booking={booking}
+          now={now}
+          isSubmitting={refundingBookingId === booking.id}
+          onRequestRefund={onRequestRefund}
+          compact
+        />
       </div>
     </article>
   );
@@ -507,6 +596,172 @@ function PaymentStatusLabel({
   );
 }
 
+function RefundAction({
+  booking,
+  now,
+  isSubmitting,
+  onRequestRefund,
+  compact = false,
+}: {
+  booking: BookingHistoryItem;
+  now: number;
+  isSubmitting: boolean;
+  onRequestRefund: (booking: BookingHistoryItem) => void;
+  compact?: boolean;
+}) {
+  const refundRequest = booking.refund.request;
+  const remainingSeconds = getRefundRemainingSeconds(booking, now);
+  const canRequest = booking.refund.canRequest && remainingSeconds > 0;
+
+  if (refundRequest) {
+    const statusClass =
+      refundRequest.status === "APPROVED"
+        ? "bg-emerald-500/12 text-emerald-300"
+        : refundRequest.status === "REJECTED"
+          ? "bg-red-500/12 text-red-300"
+          : "bg-amber-400/12 text-amber-200";
+
+    return (
+      <span className={`inline-flex max-w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-black ${statusClass}`}>
+        <Undo2 size={14} className="shrink-0" />
+        <span className="truncate">{refundRequest.statusLabel}</span>
+      </span>
+    );
+  }
+
+  if (canRequest) {
+    return (
+      <button
+        type="button"
+        onClick={() => onRequestRefund(booking)}
+        disabled={isSubmitting}
+        className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-cyan-400/35 bg-cyan-500/10 px-3 text-sm font-black text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-500/18 disabled:cursor-not-allowed disabled:opacity-60 ${
+          compact ? "w-full" : "min-w-[138px]"
+        }`}
+      >
+        {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Undo2 size={16} />}
+        Hủy/hoàn
+      </button>
+    );
+  }
+
+  if (booking.payment.status === "SUCCESS" && booking.bookingStatus === "CONFIRMED") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-white/8 px-2 py-1 text-xs font-black text-white/42">
+        Quá hạn hoàn tiền
+      </span>
+    );
+  }
+
+  return compact ? null : <span className="text-sm font-semibold text-white/35">-</span>;
+}
+
+function RefundRequestModal({
+  booking,
+  now,
+  selectedReason,
+  isSubmitting,
+  onReasonChange,
+  onSubmit,
+  onClose,
+}: {
+  booking: BookingHistoryItem;
+  now: number;
+  selectedReason: string;
+  isSubmitting: boolean;
+  onReasonChange: (reason: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  const remainingSeconds = getRefundRemainingSeconds(booking, now);
+  const canSubmit = booking.refund.canRequest && remainingSeconds > 0 && Boolean(selectedReason);
+  const reasonOptions =
+    booking.refund.reasonOptions.length > 0
+      ? booking.refund.reasonOptions
+      : ["Không còn nhu cầu đặt vé", "Đặt nhầm suất chiếu", "Đặt nhầm ghế", "Lý do cá nhân", "Khác"];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+      <div className="w-full max-w-xl overflow-hidden rounded-lg border border-white/10 bg-[#151719] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-red-300">
+              {booking.bookingCode}
+            </p>
+            <h2 className="mt-1 text-xl font-black text-white">
+              Yêu cầu hủy vé và hoàn tiền
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-white/60 transition hover:bg-white/8 hover:text-white"
+            aria-label="Đóng"
+          >
+            <XCircle size={18} />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          <div className="grid gap-3 rounded-md border border-white/10 bg-white/5 p-3 text-sm font-semibold text-white/70 sm:grid-cols-2">
+            <InfoText label="Phim" value={booking.movie?.title ?? "Phim chưa xác định"} />
+            <InfoText label="Ghế" value={booking.seats.label || "Chưa chọn"} />
+            <InfoText label="Số tiền" value={booking.amounts.finalLabel} />
+            <InfoText label="Còn lại" value={formatCountdown(remainingSeconds)} />
+          </div>
+
+          <label className="grid gap-2">
+            <span className="text-sm font-black text-white">Lý do hoàn tiền</span>
+            <select
+              value={selectedReason}
+              onChange={(event) => onReasonChange(event.target.value)}
+              className="h-11 rounded-md border border-white/10 bg-[#0d1320] px-3 text-sm font-bold text-white outline-none transition focus:border-red-500"
+            >
+              {reasonOptions.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <p className="rounded-md border border-amber-300/20 bg-amber-400/10 px-3 py-2 text-sm font-semibold leading-6 text-amber-100">
+            Yêu cầu hoàn tiền chỉ được gửi trong vòng 2 tiếng kể từ thời gian đặt vé.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 border-t border-white/10 px-5 py-4 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex min-h-10 items-center justify-center rounded-md border border-white/10 px-4 text-sm font-black text-white/70 transition hover:bg-white/8 hover:text-white"
+          >
+            Đóng
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={!canSubmit || isSubmitting}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40"
+          >
+            {isSubmitting ? <Loader2 size={17} className="animate-spin" /> : <Undo2 size={17} />}
+            Gửi yêu cầu
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoText({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-black uppercase text-white/35">{label}</p>
+      <p className="mt-1 truncate text-white">{value}</p>
+    </div>
+  );
+}
+
 function NoticeBox({ notice }: { notice: Notice }) {
   const isSuccess = notice.type === "success";
   const Icon = isSuccess ? CheckCircle2 : AlertCircle;
@@ -557,6 +812,13 @@ function getRemainingSeconds(booking: BookingHistoryItem, now: number) {
   }
 
   return Math.max(0, Math.floor((new Date(booking.payment.deadlineAt).getTime() - now) / 1000));
+}
+
+function getRefundRemainingSeconds(booking: BookingHistoryItem, now: number) {
+  return Math.max(
+    0,
+    Math.floor((new Date(booking.refund.requestDeadlineAt).getTime() - now) / 1000),
+  );
 }
 
 function formatCountdown(totalSeconds: number) {

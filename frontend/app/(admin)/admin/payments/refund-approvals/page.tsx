@@ -1,6 +1,5 @@
-import AdminModulePage from "@/components/admin/AdminModulePage";
-import { adminMenuPageConfigs } from "@/components/admin/admin-menu-page-configs";
+import AdminRefundApprovalsPageClient from "./AdminRefundApprovalsPageClient";
 
 export default function AdminRefundApprovalsPage() {
-  return <AdminModulePage {...adminMenuPageConfigs.refundApprovals} />;
+  return <AdminRefundApprovalsPageClient />;
 }

@@ -75,6 +75,12 @@ export type AdminMoviePayload = {
   bannerUrl: string;
 };
 
+export type AdminMovieSchedulePayload = {
+  releaseDate?: string;
+  endDate?: string;
+  statusCode?: AdminMovieStatusCode;
+};
+
 export type AdminMovieMutationResponse = {
   message: string;
   movie: AdminMovieRecord;
@@ -167,6 +173,16 @@ export function createAdminMovie(payload: AdminMoviePayload) {
 }
 
 export function updateAdminMovie(id: string | number, payload: AdminMoviePayload) {
+  return requestAdmin<AdminMovieMutationResponse>(`/admin/movies/${id}`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function updateAdminMovieSchedule(
+  id: string | number,
+  payload: AdminMovieSchedulePayload,
+) {
   return requestAdmin<AdminMovieMutationResponse>(`/admin/movies/${id}`, {
     method: "PUT",
     body: payload,

@@ -14,7 +14,7 @@ export const AUTH_TOKEN_KEY = "cinex_auth_token";
 export const AUTH_STORAGE_EVENT = "cinex-auth-change";
 export const AUTH_DEV_SESSION_KEY = "cinex_auth_dev_session";
 
-const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF"]);
+const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF", "ACCOUNTANT"]);
 const isBrowser = () => typeof window !== "undefined";
 let authResetForDevSession = false;
 

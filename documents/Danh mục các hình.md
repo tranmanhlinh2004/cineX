@@ -26,13 +26,9 @@ Hình 1.10. Kiến trúc hệ thống nhiều tầng
 
 Hình 1.11. Mô hình Client-Server
 
+Hình 1.12. Sơ đồ Use Case
 
+Hình 1.13. Biểu đồ hoạt động
 
-
-
-
-
-
-
-
+Hình 1.14. Biểu đồ tuần tự
 

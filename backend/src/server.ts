@@ -3,10 +3,10 @@ import bcrypt from "bcrypt";
 import {
   BookingStatus,
   HoldStatus,
+  Prisma,
   PrismaClient,
   ShowtimeStatus,
   type MovieStatus,
-  type Prisma,
   type Promotion,
 } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -46,13 +46,22 @@ const movieImageExtensions: Record<string, string> = {
 };
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const pendingPaymentWindowMs = 5 * 60 * 1000;
+const refundRequestWindowMs = 2 * 60 * 60 * 1000;
 const paymentMethods = ["CASH", "MOMO", "VNPAY", "ZALOPAY", "BANKING", "CARD"] as const;
 const ticketBookingPaymentMethods = [
   "VNPAY",
   "BANKING",
 ] as const satisfies readonly (typeof paymentMethods)[number][];
+const refundReasonOptions = [
+  "Không còn nhu cầu đặt vé",
+  "Đặt nhầm suất chiếu",
+  "Đặt nhầm ghế",
+  "Lý do cá nhân",
+  "Khác",
+] as const;
 const paymentMethodSet = new Set<string>(paymentMethods);
 const ticketBookingPaymentMethodSet = new Set<string>(ticketBookingPaymentMethods);
+const seatUnavailableErrorMessage = "SEAT_UNAVAILABLE";
 const demoShowtimeRefreshDayCount = 5;
 const showtimeChangeoverMinutes = 15;
 const dayInMs = 24 * 60 * 60 * 1000;
@@ -60,6 +69,14 @@ const catalogDateKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
 const recommendedMovieStatuses = ["NOW_SHOWING", "COMING_SOON"] satisfies MovieStatus[];
 
 type JsonBody = Record<string, unknown>;
+
+const RefundStatus = {
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+} as const;
+
+type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 
 type UserWithRole = {
   id: number;
@@ -305,6 +322,208 @@ function formatCurrency(value: number) {
   return currencyFormatter.format(value).replace(/\s/g, "");
 }
 
+const refundStatusLabels = {
+  PENDING: "Chờ duyệt",
+  APPROVED: "Đã duyệt",
+  REJECTED: "Từ chối",
+} satisfies Record<RefundStatus, string>;
+
+function getRefundStatusLabel(status: RefundStatus) {
+  return refundStatusLabels[status] ?? status;
+}
+
+const adminPaymentMethodLabels = {
+  CASH: "Quầy vé",
+  MOMO: "MoMo",
+  VNPAY: "VNPay",
+  ZALOPAY: "ZaloPay",
+  BANKING: "Chuyển khoản",
+  CARD: "Thẻ ngân hàng",
+} satisfies Record<(typeof paymentMethods)[number], string>;
+
+const adminPaymentStatusLabels = {
+  PENDING: "Chờ thanh toán",
+  SUCCESS: "Đã thanh toán",
+  FAILED: "Thất bại",
+  REFUNDED: "Đã hoàn tiền",
+} as const;
+
+function getAdminPaymentMethodLabel(method: string) {
+  return (adminPaymentMethodLabels as Record<string, string>)[method] ?? method;
+}
+
+function getAdminPaymentStatusLabel(status: string) {
+  return (adminPaymentStatusLabels as Record<string, string>)[status] ?? status;
+}
+
+type RefundRequestAmount = Prisma.Decimal | number | string;
+
+type BookingHistoryRefundRequest = {
+  id: number;
+  refundCode: string;
+  reason: string;
+  status: RefundStatus;
+  amount: RefundRequestAmount;
+  requestedAt: Date;
+  reviewedAt: Date | null;
+  reviewerNote: string | null;
+};
+
+type AdminRefundRequestRecord = {
+  id: number;
+  refundCode: string;
+  bookingId: number;
+  userId: number;
+  reason: string;
+  status: RefundStatus;
+  amount: RefundRequestAmount;
+  requestedAt: Date;
+  reviewedAt: Date | null;
+  reviewerNote: string | null;
+  user: {
+    id: number;
+    fullName: string;
+    email: string;
+    phone: string | null;
+  };
+  reviewer: {
+    id: number;
+    fullName: string;
+    email: string;
+  } | null;
+  booking: {
+    id: number;
+    bookingCode: string;
+    status: BookingStatus;
+    createdAt: Date;
+    payments: Array<{
+      id: number;
+      method: string;
+      status: string;
+      transactionCode: string | null;
+      paidAt: Date | null;
+    }>;
+    tickets: Array<{
+      id: number;
+      ticketCode: string;
+      status: string;
+    }>;
+    bookingDetails: Array<{
+      showtimeId: number;
+      seatId: number;
+      seat: {
+        seatCode: string;
+      };
+      showtime: {
+        id: number;
+        startTime: Date;
+        endTime: Date;
+        movie: {
+          title: string;
+        };
+        room: {
+          id: number;
+          name: string;
+          cinema: {
+            name: string;
+            address: string;
+          };
+        };
+      };
+    }>;
+  };
+};
+
+type RefundRequestDelegate = {
+  findUnique: <T>(args: unknown) => Promise<T>;
+  findMany: <T>(args: unknown) => Promise<T>;
+  create: <T>(args: unknown) => Promise<T>;
+  updateMany: (args: unknown) => Promise<{ count: number }>;
+};
+
+type NotificationRecord = {
+  id: number;
+  title: string;
+  message: string;
+  type: string;
+  isRead: boolean;
+  metadata: Prisma.JsonValue | null;
+  readAt: Date | null;
+  createdAt: Date;
+};
+
+type NotificationDelegate = {
+  findMany: <T>(args: unknown) => Promise<T>;
+  count: (args: unknown) => Promise<number>;
+  create: <T>(args: unknown) => Promise<T>;
+  updateMany: (args: unknown) => Promise<{ count: number }>;
+};
+
+const adminPaymentTransactionInclude = {
+  booking: {
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
+      bookingDetails: {
+        orderBy: {
+          id: "asc",
+        },
+        include: {
+          seat: {
+            include: {
+              seatType: true,
+            },
+          },
+          showtime: {
+            include: {
+              movie: {
+                select: {
+                  id: true,
+                  title: true,
+                  slug: true,
+                },
+              },
+              room: {
+                include: {
+                  cinema: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      tickets: {
+        orderBy: {
+          id: "asc",
+        },
+        select: {
+          id: true,
+          ticketCode: true,
+          status: true,
+        },
+      },
+    },
+  },
+} as const satisfies Prisma.PaymentInclude;
+
+type AdminPaymentTransactionRecord = Prisma.PaymentGetPayload<{
+  include: typeof adminPaymentTransactionInclude;
+}>;
+
+function getRefundRequestDelegate(client: unknown = prisma) {
+  return (client as { refundRequest: RefundRequestDelegate }).refundRequest;
+}
+
+function getNotificationDelegate(client: unknown = prisma) {
+  return (client as { notification: NotificationDelegate }).notification;
+}
+
 function getMovieInclude(
   now: Date,
   options: { showtimeStartTime?: Prisma.ShowtimeWhereInput["startTime"] } = {},
@@ -369,12 +588,7 @@ function getMovieInclude(
           },
         },
         seatHolds: {
-          where: {
-            status: HoldStatus.HOLDING,
-            expiresAt: {
-              gt: now,
-            },
-          },
+          where: getActiveSeatHoldWhere(now),
           select: {
             seatId: true,
           },
@@ -1517,6 +1731,424 @@ function isShowtimeOverlapConstraintError(error: unknown) {
   );
 }
 
+function getActiveSeatHoldWhere(now = new Date()): Prisma.SeatHoldWhereInput {
+  return {
+    OR: [
+      { status: HoldStatus.BOOKED },
+      {
+        status: HoldStatus.HOLDING,
+        expiresAt: {
+          gt: now,
+        },
+      },
+    ],
+  };
+}
+
+function createSeatHoldCode(bookingCode: string, index: number) {
+  return `HOLD-${bookingCode}-${index + 1}`;
+}
+
+function isSeatUnavailableError(error: unknown) {
+  return (
+    (error instanceof Error && error.message === seatUnavailableErrorMessage) ||
+    isPrismaErrorCode(error, "P2002")
+  );
+}
+
+function isRetryableTransactionError(error: unknown) {
+  return isPrismaErrorCode(error, "P2034");
+}
+
+async function runSerializableTransaction<T>(
+  operation: (tx: Prisma.TransactionClient) => Promise<T>,
+) {
+  const maxAttempts = 3;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      if (attempt < maxAttempts - 1 && isRetryableTransactionError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error("TRANSACTION_RETRY_EXHAUSTED");
+}
+
+async function acquireSeatHold(
+  tx: Prisma.TransactionClient,
+  params: {
+    userId: number;
+    showtimeId: number;
+    seatId: number;
+    holdCode: string;
+    expiresAt: Date;
+    now: Date;
+  },
+) {
+  const reusableHold = await tx.seatHold.updateMany({
+    where: {
+      showtimeId: params.showtimeId,
+      seatId: params.seatId,
+      OR: [
+        {
+          status: {
+            in: [HoldStatus.EXPIRED, HoldStatus.RELEASED],
+          },
+        },
+        {
+          status: HoldStatus.HOLDING,
+          expiresAt: {
+            lte: params.now,
+          },
+        },
+      ],
+    },
+    data: {
+      userId: params.userId,
+      holdCode: params.holdCode,
+      status: HoldStatus.HOLDING,
+      expiresAt: params.expiresAt,
+    },
+  });
+
+  if (reusableHold.count > 0) {
+    return;
+  }
+
+  try {
+    await tx.seatHold.create({
+      data: {
+        userId: params.userId,
+        showtimeId: params.showtimeId,
+        seatId: params.seatId,
+        holdCode: params.holdCode,
+        status: HoldStatus.HOLDING,
+        expiresAt: params.expiresAt,
+      },
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2002")) {
+      throw new Error(seatUnavailableErrorMessage);
+    }
+
+    throw error;
+  }
+}
+
+async function markSeatHoldBooked(
+  tx: Prisma.TransactionClient,
+  params: {
+    userId: number;
+    showtimeId: number;
+    seatId: number;
+    holdCode: string;
+    expiresAt: Date;
+  },
+) {
+  const activeHold = await tx.seatHold.updateMany({
+    where: {
+      userId: params.userId,
+      showtimeId: params.showtimeId,
+      seatId: params.seatId,
+      status: HoldStatus.HOLDING,
+    },
+    data: {
+      holdCode: params.holdCode,
+      status: HoldStatus.BOOKED,
+      expiresAt: params.expiresAt,
+    },
+  });
+
+  if (activeHold.count > 0) {
+    return;
+  }
+
+  const reusableHold = await tx.seatHold.updateMany({
+    where: {
+      showtimeId: params.showtimeId,
+      seatId: params.seatId,
+      status: {
+        in: [HoldStatus.EXPIRED, HoldStatus.RELEASED],
+      },
+    },
+    data: {
+      userId: params.userId,
+      holdCode: params.holdCode,
+      status: HoldStatus.BOOKED,
+      expiresAt: params.expiresAt,
+    },
+  });
+
+  if (reusableHold.count > 0) {
+    return;
+  }
+
+  try {
+    await tx.seatHold.create({
+      data: {
+        userId: params.userId,
+        showtimeId: params.showtimeId,
+        seatId: params.seatId,
+        holdCode: params.holdCode,
+        status: HoldStatus.BOOKED,
+        expiresAt: params.expiresAt,
+      },
+    });
+  } catch (error) {
+    if (isPrismaErrorCode(error, "P2002")) {
+      throw new Error(seatUnavailableErrorMessage);
+    }
+
+    throw error;
+  }
+}
+
+async function expireSeatHoldsForBooking(
+  tx: Prisma.TransactionClient,
+  booking: {
+    userId: number;
+    bookingDetails: Array<{
+      showtimeId: number;
+      seatId: number;
+    }>;
+  },
+  expiredAt = new Date(),
+) {
+  for (const detail of booking.bookingDetails) {
+    await tx.seatHold.updateMany({
+      where: {
+        userId: booking.userId,
+        showtimeId: detail.showtimeId,
+        seatId: detail.seatId,
+        status: HoldStatus.HOLDING,
+      },
+      data: {
+        status: HoldStatus.EXPIRED,
+        expiresAt: expiredAt,
+      },
+    });
+  }
+}
+
+type BookingSeatSyncScope = {
+  userId?: number;
+  showtimeId?: number;
+};
+
+async function upsertSeatHoldFromBooking(
+  tx: Prisma.TransactionClient,
+  params: {
+    userId: number;
+    showtimeId: number;
+    seatId: number;
+    holdCode: string;
+    status: typeof HoldStatus.HOLDING | typeof HoldStatus.BOOKED;
+    expiresAt: Date;
+  },
+) {
+  const data = {
+    userId: params.userId,
+    showtimeId: params.showtimeId,
+    seatId: params.seatId,
+    holdCode: params.holdCode,
+    status: params.status,
+    expiresAt: params.expiresAt,
+  };
+  const existingHold =
+    (await tx.seatHold.findFirst({
+      where: {
+        showtimeId: params.showtimeId,
+        seatId: params.seatId,
+      },
+      select: {
+        id: true,
+        userId: true,
+        holdCode: true,
+        status: true,
+        expiresAt: true,
+      },
+    })) ??
+    (await tx.seatHold.findUnique({
+      where: {
+        holdCode: params.holdCode,
+      },
+      select: {
+        id: true,
+        userId: true,
+        holdCode: true,
+        status: true,
+        expiresAt: true,
+      },
+    }));
+
+  if (existingHold) {
+    if (
+      existingHold.userId === params.userId &&
+      existingHold.holdCode === params.holdCode &&
+      existingHold.status === params.status &&
+      existingHold.expiresAt.getTime() === params.expiresAt.getTime()
+    ) {
+      return;
+    }
+
+    await tx.seatHold.update({
+      where: {
+        id: existingHold.id,
+      },
+      data,
+    });
+    return;
+  }
+
+  await tx.seatHold.create({
+    data,
+  });
+}
+
+async function syncBookingSeatArtifactsFromDatabase(scope: BookingSeatSyncScope = {}) {
+  const bookings = await prisma.booking.findMany({
+    where: {
+      ...(scope.userId ? { userId: scope.userId } : {}),
+      ...(scope.showtimeId
+        ? {
+            bookingDetails: {
+              some: {
+                showtimeId: scope.showtimeId,
+              },
+            },
+          }
+        : {}),
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      userId: true,
+      bookingCode: true,
+      status: true,
+      createdAt: true,
+      payments: {
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 1,
+        select: {
+          createdAt: true,
+        },
+      },
+      bookingDetails: {
+        orderBy: {
+          id: "asc",
+        },
+        select: {
+          showtimeId: true,
+          seatId: true,
+          price: true,
+          showtime: {
+            select: {
+              endTime: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (bookings.length === 0) {
+    return;
+  }
+
+  const now = new Date();
+
+  await runSerializableTransaction(async (tx) => {
+    for (const booking of bookings) {
+      const paymentCreatedAt = booking.payments[0]?.createdAt ?? booking.createdAt;
+      const paymentDeadlineAt = new Date(paymentCreatedAt.getTime() + pendingPaymentWindowMs);
+
+      for (let index = 0; index < booking.bookingDetails.length; index += 1) {
+        const detail = booking.bookingDetails[index];
+
+        if (scope.showtimeId && detail.showtimeId !== scope.showtimeId) {
+          continue;
+        }
+
+        if (booking.status === BookingStatus.CONFIRMED) {
+          await upsertSeatHoldFromBooking(tx, {
+            userId: booking.userId,
+            showtimeId: detail.showtimeId,
+            seatId: detail.seatId,
+            holdCode: createSeatHoldCode(booking.bookingCode, index),
+            status: HoldStatus.BOOKED,
+            expiresAt: detail.showtime.endTime,
+          });
+
+          await upsertPaidTicket(
+            {
+              bookingId: booking.id,
+              bookingCode: booking.bookingCode,
+              showtimeId: detail.showtimeId,
+              seatId: detail.seatId,
+              price: Number(detail.price),
+              index,
+            },
+            tx,
+          );
+          continue;
+        }
+
+        if (booking.status === BookingStatus.PENDING && paymentDeadlineAt > now) {
+          await upsertSeatHoldFromBooking(tx, {
+            userId: booking.userId,
+            showtimeId: detail.showtimeId,
+            seatId: detail.seatId,
+            holdCode: createSeatHoldCode(booking.bookingCode, index),
+            status: HoldStatus.HOLDING,
+            expiresAt: paymentDeadlineAt,
+          });
+          continue;
+        }
+
+        await tx.seatHold.updateMany({
+          where: {
+            userId: booking.userId,
+            showtimeId: detail.showtimeId,
+            seatId: detail.seatId,
+            status: {
+              in: [HoldStatus.HOLDING, HoldStatus.BOOKED],
+            },
+          },
+          data: {
+            status:
+              booking.status === BookingStatus.EXPIRED ? HoldStatus.EXPIRED : HoldStatus.RELEASED,
+            expiresAt: now,
+          },
+        });
+
+        await tx.ticket.updateMany({
+          where: {
+            bookingId: booking.id,
+            showtimeId: detail.showtimeId,
+            seatId: detail.seatId,
+            status: {
+              not: "CANCELLED",
+            },
+          },
+          data: {
+            status: "CANCELLED",
+          },
+        });
+      }
+    }
+  });
+}
+
 async function handleCreateAdminAccount(request: IncomingMessage, response: ServerResponse) {
   const requestUser = await getAdminAccountRequestUser(request, response);
 
@@ -2601,36 +3233,60 @@ const adminShowtimeStatusLabels = {
   FINISHED: "Đã kết thúc",
 } satisfies Record<ShowtimeStatus, string>;
 
-const adminShowtimeInclude = {
-  movie: {
-    select: {
-      id: true,
-      title: true,
-      slug: true,
-      duration: true,
-      language: true,
-      ageLimit: true,
-      status: true,
-      releaseDate: true,
-      endDate: true,
+function getAdminShowtimeInclude() {
+  return {
+    movie: {
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        duration: true,
+        language: true,
+        ageLimit: true,
+        status: true,
+        releaseDate: true,
+        endDate: true,
+      },
     },
-  },
-  room: {
-    include: {
-      cinema: true,
+    room: {
+      include: {
+        cinema: true,
+      },
     },
-  },
-  _count: {
-    select: {
-      bookingDetails: true,
-      seatHolds: true,
-      tickets: true,
+    bookingDetails: {
+      where: {
+        booking: {
+          status: {
+            in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+          },
+        },
+      },
+      select: {
+        seatId: true,
+        booking: {
+          select: {
+            status: true,
+          },
+        },
+      },
     },
-  },
-} satisfies Prisma.ShowtimeInclude;
+    seatHolds: {
+      where: getActiveSeatHoldWhere(),
+      select: {
+        seatId: true,
+        status: true,
+      },
+    },
+    _count: {
+      select: {
+        tickets: true,
+      },
+    },
+  } satisfies Prisma.ShowtimeInclude;
+}
 
 type AdminShowtimeRecord = Prisma.ShowtimeGetPayload<{
-  include: typeof adminShowtimeInclude;
+  include: ReturnType<typeof getAdminShowtimeInclude>;
 }>;
 
 function getAdminShowtimeStatusLabel(status: ShowtimeStatus) {
@@ -2760,7 +3416,33 @@ function numberBodyField(body: JsonBody, key: string) {
 
 function serializeAdminShowtime(showtime: AdminShowtimeRecord) {
   const basePrice = Number(showtime.basePrice);
-  const reservedSeats = showtime._count.bookingDetails + showtime._count.seatHolds;
+  const bookedSeatIds = new Set<number>();
+  const heldSeatIds = new Set<number>();
+
+  for (const bookingDetail of showtime.bookingDetails) {
+    if (bookingDetail.booking.status === BookingStatus.CONFIRMED) {
+      bookedSeatIds.add(bookingDetail.seatId);
+      continue;
+    }
+
+    heldSeatIds.add(bookingDetail.seatId);
+  }
+
+  for (const seatHold of showtime.seatHolds) {
+    if (seatHold.status === HoldStatus.BOOKED) {
+      bookedSeatIds.add(seatHold.seatId);
+      continue;
+    }
+
+    heldSeatIds.add(seatHold.seatId);
+  }
+
+  for (const seatId of bookedSeatIds) {
+    heldSeatIds.delete(seatId);
+  }
+
+  const reservedSeatIds = new Set([...bookedSeatIds, ...heldSeatIds]);
+  const reservedSeats = reservedSeatIds.size;
   const availableSeats = Math.max(showtime.room.totalSeats - reservedSeats, 0);
 
   return {
@@ -2789,8 +3471,8 @@ function serializeAdminShowtime(showtime: AdminShowtimeRecord) {
     price: formatCurrency(basePrice),
     statusCode: showtime.status,
     status: getAdminShowtimeStatusLabel(showtime.status),
-    bookedSeats: showtime._count.bookingDetails,
-    heldSeats: showtime._count.seatHolds,
+    bookedSeats: bookedSeatIds.size,
+    heldSeats: heldSeatIds.size,
     ticketsSold: showtime._count.tickets,
     availableSeats,
     createdAt: showtime.createdAt.toISOString(),
@@ -2876,7 +3558,7 @@ async function fetchAdminShowtimes(
       sortMode === "recent"
         ? [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }]
         : [{ startTime: "desc" }, { id: "desc" }],
-    include: adminShowtimeInclude,
+    include: getAdminShowtimeInclude(),
   });
 }
 
@@ -2885,7 +3567,7 @@ async function fetchAdminShowtimeById(showtimeId: number) {
     where: {
       id: showtimeId,
     },
-    include: adminShowtimeInclude,
+    include: getAdminShowtimeInclude(),
   });
 }
 
@@ -3187,7 +3869,7 @@ async function handleCreateAdminShowtime(request: IncomingMessage, response: Ser
   try {
     createdShowtime = await prisma.showtime.create({
       data: result.data,
-      include: adminShowtimeInclude,
+      include: getAdminShowtimeInclude(),
     });
   } catch (error) {
     if (isShowtimeOverlapConstraintError(error)) {
@@ -3241,7 +3923,7 @@ async function handleUpdateAdminShowtime(
         id: existingShowtime.id,
       },
       data: result.data,
-      include: adminShowtimeInclude,
+      include: getAdminShowtimeInclude(),
     });
   } catch (error) {
     if (isShowtimeOverlapConstraintError(error)) {
@@ -3578,6 +4260,7 @@ async function handleChangePassword(request: IncomingMessage, response: ServerRe
 
 async function expireOverduePendingBookings(userId?: number) {
   const cutoff = new Date(Date.now() - pendingPaymentWindowMs);
+  const expiredAt = new Date();
 
   await prisma.payment.updateMany({
     where: {
@@ -3596,7 +4279,7 @@ async function expireOverduePendingBookings(userId?: number) {
     },
   });
 
-  await prisma.booking.updateMany({
+  const overdueBookings = await prisma.booking.findMany({
     where: {
       ...(userId ? { userId } : {}),
       status: "PENDING",
@@ -3609,14 +4292,44 @@ async function expireOverduePendingBookings(userId?: number) {
         },
       },
     },
-    data: {
-      status: "EXPIRED",
+    select: {
+      id: true,
+      userId: true,
+      bookingDetails: {
+        select: {
+          showtimeId: true,
+          seatId: true,
+        },
+      },
     },
+  });
+
+  if (overdueBookings.length === 0) {
+    return;
+  }
+
+  await runSerializableTransaction(async (tx) => {
+    for (const booking of overdueBookings) {
+      await expireSeatHoldsForBooking(tx, booking, expiredAt);
+    }
+
+    await tx.booking.updateMany({
+      where: {
+        id: {
+          in: overdueBookings.map((booking) => booking.id),
+        },
+        status: "PENDING",
+      },
+      data: {
+        status: "EXPIRED",
+      },
+    });
   });
 }
 
 async function fetchUserBookingHistory(userId: number) {
   await expireOverduePendingBookings(userId);
+  await syncBookingSeatArtifactsFromDatabase({ userId });
 
   return prisma.booking.findMany({
     where: {
@@ -3638,6 +4351,22 @@ async function fetchUserBookingHistory(userId: number) {
           createdAt: "desc",
         },
         take: 1,
+      },
+      refundRequests: {
+        orderBy: {
+          requestedAt: "desc",
+        },
+        take: 1,
+        select: {
+          id: true,
+          refundCode: true,
+          reason: true,
+          status: true,
+          amount: true,
+          requestedAt: true,
+          reviewedAt: true,
+          reviewerNote: true,
+        },
       },
       bookingDetails: {
         orderBy: {
@@ -3682,14 +4411,24 @@ async function fetchUserBookingHistory(userId: number) {
 }
 
 type BookingHistoryRecord = Awaited<ReturnType<typeof fetchUserBookingHistory>>[number];
+type BookingHistoryRecordWithRefund = Omit<BookingHistoryRecord, "refundRequests"> & {
+  refundRequests: BookingHistoryRefundRequest[];
+};
 
 function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
+  const bookingWithRefund = booking as BookingHistoryRecordWithRefund;
   const payment = booking.payments[0] ?? null;
+  const refundRequest = bookingWithRefund.refundRequests[0] ?? null;
   const primaryDetail = booking.bookingDetails[0];
   const primaryShowtime = primaryDetail?.showtime ?? null;
   const primaryMovie = primaryShowtime?.movie ?? null;
   const primaryRoom = primaryShowtime?.room ?? null;
   const paymentCreatedAt = payment?.createdAt ?? booking.createdAt;
+  const refundRequestDeadlineAt = new Date(booking.createdAt.getTime() + refundRequestWindowMs);
+  const remainingRefundSeconds = Math.max(
+    0,
+    Math.floor((refundRequestDeadlineAt.getTime() - Date.now()) / 1000),
+  );
   const paymentDeadlineAt =
     payment?.status === "PENDING"
       ? new Date(paymentCreatedAt.getTime() + pendingPaymentWindowMs)
@@ -3704,6 +4443,13 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
   const seatTypeNames = [
     ...new Set(booking.bookingDetails.map((detail) => detail.seat.seatType.name)),
   ];
+  const hasUsedTicket = booking.tickets.some((ticket) => ticket.status === "USED");
+  const canRequestRefund =
+    booking.status === BookingStatus.CONFIRMED &&
+    payment?.status === "SUCCESS" &&
+    !refundRequest &&
+    !hasUsedTicket &&
+    Date.now() <= refundRequestDeadlineAt.getTime();
   const posterUrl =
     primaryMovie?.posterUrl ?? primaryMovie?.movieImages[0]?.imageUrl ?? "/movies/demo.png";
   const bannerUrl = primaryMovie?.bannerUrl ?? posterUrl;
@@ -3811,6 +4557,27 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
       qrCode: ticket.qrCode,
       status: ticket.status,
     })),
+    refund: {
+      canRequest: canRequestRefund,
+      windowSeconds: refundRequestWindowMs / 1000,
+      requestDeadlineAt: refundRequestDeadlineAt.toISOString(),
+      remainingSeconds: remainingRefundSeconds,
+      reasonOptions: refundReasonOptions,
+      request: refundRequest
+        ? {
+            id: refundRequest.id,
+            refundCode: refundRequest.refundCode,
+            reason: refundRequest.reason,
+            status: refundRequest.status,
+            statusLabel: getRefundStatusLabel(refundRequest.status),
+            amount: Number(refundRequest.amount),
+            amountLabel: formatCurrency(Number(refundRequest.amount)),
+            requestedAt: refundRequest.requestedAt.toISOString(),
+            reviewedAt: refundRequest.reviewedAt?.toISOString() ?? null,
+            reviewerNote: refundRequest.reviewerNote,
+          }
+        : null,
+    },
     createdAt: booking.createdAt.toISOString(),
     updatedAt: booking.updatedAt.toISOString(),
   };
@@ -3829,6 +4596,7 @@ async function upsertPaidTicket(
 ) {
   const client = tx ?? prisma;
   const ticketCode = `${params.bookingCode}-${params.index + 1}`;
+  const qrCode = `QR-${ticketCode}`;
   const existingTicket = await client.ticket.findFirst({
     where: {
       showtimeId: params.showtimeId,
@@ -3837,6 +4605,20 @@ async function upsertPaidTicket(
   });
 
   if (existingTicket) {
+    if (existingTicket.bookingId !== params.bookingId) {
+      throw new Error(seatUnavailableErrorMessage);
+    }
+
+    if (
+      existingTicket.ticketCode === ticketCode &&
+      existingTicket.status === "ACTIVE" &&
+      existingTicket.qrCode === qrCode &&
+      existingTicket.usedAt === null &&
+      Number(existingTicket.price) === params.price
+    ) {
+      return;
+    }
+
     await client.ticket.update({
       where: {
         id: existingTicket.id,
@@ -3846,7 +4628,7 @@ async function upsertPaidTicket(
         ticketCode,
         price: params.price,
         status: "ACTIVE",
-        qrCode: `QR-${ticketCode}`,
+        qrCode,
         usedAt: null,
       },
     });
@@ -3861,7 +4643,7 @@ async function upsertPaidTicket(
       ticketCode,
       price: params.price,
       status: "ACTIVE",
-      qrCode: `QR-${ticketCode}`,
+      qrCode,
     },
   });
 }
@@ -3878,8 +4660,152 @@ async function handleGetBookingHistory(request: IncomingMessage, response: Serve
 
   sendJson(response, 200, {
     paymentWindowSeconds: pendingPaymentWindowMs / 1000,
+    refundWindowSeconds: refundRequestWindowMs / 1000,
+    refundReasonOptions,
     paymentMethods,
     bookings: bookings.map(serializeBookingHistoryItem),
+  });
+}
+
+async function createUniqueRefundCode() {
+  const datePart = getDateKey(new Date()).replace(/-/g, "");
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = `RF${datePart}${randomBytes(3).toString("hex").toUpperCase()}`;
+    const existingRefund = await getRefundRequestDelegate().findUnique<{ id: number } | null>({
+      where: {
+        refundCode: code,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingRefund) {
+      return code;
+    }
+  }
+
+  throw new Error("REFUND_CODE_RETRY_EXHAUSTED");
+}
+
+async function handleCreateRefundRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  bookingId: number,
+) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để yêu cầu hoàn tiền." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const reason = stringField(body, "reason");
+
+  if (!reason) {
+    sendJson(response, 400, { message: "Vui lòng chọn lý do hoàn tiền." });
+    return;
+  }
+
+  if (reason.length > 250) {
+    sendJson(response, 400, { message: "Lý do hoàn tiền tối đa 250 ký tự." });
+    return;
+  }
+
+  await expireOverduePendingBookings(user.id);
+
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId: user.id,
+    },
+    include: {
+      payments: {
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 1,
+      },
+      refundRequests: {
+        orderBy: {
+          requestedAt: "desc",
+        },
+        take: 1,
+      },
+      tickets: {
+        select: {
+          status: true,
+        },
+      },
+    },
+  });
+
+  if (!booking) {
+    sendJson(response, 404, { message: "Không tìm thấy vé cần hủy." });
+    return;
+  }
+
+  const payment = booking.payments[0] ?? null;
+
+  if (booking.status !== BookingStatus.CONFIRMED || payment?.status !== "SUCCESS") {
+    sendJson(response, 409, {
+      message: "Chỉ vé đã thanh toán thành công mới có thể gửi yêu cầu hoàn tiền.",
+    });
+    return;
+  }
+
+  const bookingWithRefund = booking as Omit<typeof booking, "refundRequests"> & {
+    refundRequests: BookingHistoryRefundRequest[];
+  };
+
+  if (bookingWithRefund.refundRequests[0]) {
+    sendJson(response, 409, {
+      message: "Vé này đã có yêu cầu hoàn tiền trong hệ thống.",
+    });
+    return;
+  }
+
+  if (booking.tickets.some((ticket) => ticket.status === "USED")) {
+    sendJson(response, 409, { message: "Vé đã soát không thể gửi yêu cầu hoàn tiền." });
+    return;
+  }
+
+  const refundDeadlineAt = new Date(booking.createdAt.getTime() + refundRequestWindowMs);
+
+  if (Date.now() > refundDeadlineAt.getTime()) {
+    sendJson(response, 409, {
+      message: "Yêu cầu hoàn tiền chỉ được gửi trong vòng 2 tiếng kể từ khi đặt vé.",
+    });
+    return;
+  }
+
+  const refundCode = await createUniqueRefundCode();
+  const refundRequest = await getRefundRequestDelegate().create<BookingHistoryRefundRequest>({
+    data: {
+      refundCode,
+      bookingId: booking.id,
+      userId: user.id,
+      reason,
+      amount: booking.finalAmount,
+    },
+  });
+
+  const [updatedBooking] = await fetchUserBookingHistory(user.id).then((bookings) =>
+    bookings.filter((item) => item.id === booking.id),
+  );
+
+  sendJson(response, 201, {
+    message: "Đã gửi yêu cầu hủy vé và hoàn tiền. Vui lòng chờ quản trị viên phê duyệt.",
+    refundRequest: {
+      id: refundRequest.id,
+      refundCode: refundRequest.refundCode,
+      status: refundRequest.status,
+      statusLabel: getRefundStatusLabel(refundRequest.status),
+      requestedAt: refundRequest.requestedAt.toISOString(),
+    },
+    booking: updatedBooking ? serializeBookingHistoryItem(updatedBooking) : null,
   });
 }
 
@@ -3940,25 +4866,29 @@ async function handlePayBooking(
   }
 
   if (Date.now() > paymentDeadlineAt.getTime()) {
-    if (payment) {
-      await prisma.payment.update({
+    await prisma.$transaction(async (tx) => {
+      if (payment) {
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+          data: {
+            status: "FAILED",
+            paymentUrl: null,
+          },
+        });
+      }
+
+      await expireSeatHoldsForBooking(tx, booking, new Date());
+
+      await tx.booking.update({
         where: {
-          id: payment.id,
+          id: booking.id,
         },
         data: {
-          status: "FAILED",
-          paymentUrl: null,
+          status: "EXPIRED",
         },
       });
-    }
-
-    await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-      data: {
-        status: "EXPIRED",
-      },
     });
 
     sendJson(response, 409, { message: "Đơn hàng đã hết thời gian thanh toán." });
@@ -3967,32 +4897,33 @@ async function handlePayBooking(
 
   const paidAt = new Date();
 
-  await prisma.$transaction(async (tx) => {
-    if (payment) {
-      await tx.payment.update({
-        where: {
-          id: payment.id,
-        },
-        data: {
-          method: method as (typeof paymentMethods)[number],
-          status: "SUCCESS",
-          paidAt,
-          paymentUrl: null,
-          transactionCode: payment.transactionCode ?? `${booking.bookingCode}-${method}`,
-        },
-      });
-    } else {
-      await tx.payment.create({
-        data: {
-          bookingId: booking.id,
-          method: method as (typeof paymentMethods)[number],
-          status: "SUCCESS",
-          amount: booking.finalAmount,
-          transactionCode: `${booking.bookingCode}-${method}`,
-          paidAt,
-        },
-      });
-    }
+  try {
+    await runSerializableTransaction(async (tx) => {
+      if (payment) {
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+          data: {
+            method: method as (typeof paymentMethods)[number],
+            status: "SUCCESS",
+            paidAt,
+            paymentUrl: null,
+            transactionCode: payment.transactionCode ?? `${booking.bookingCode}-${method}`,
+          },
+        });
+      } else {
+        await tx.payment.create({
+          data: {
+            bookingId: booking.id,
+            method: method as (typeof paymentMethods)[number],
+            status: "SUCCESS",
+            amount: booking.finalAmount,
+            transactionCode: `${booking.bookingCode}-${method}`,
+            paidAt,
+          },
+        });
+      }
 
     await tx.booking.update({
       where: {
@@ -4005,6 +4936,15 @@ async function handlePayBooking(
 
     for (let index = 0; index < booking.bookingDetails.length; index += 1) {
       const detail = booking.bookingDetails[index];
+      const holdCode = createSeatHoldCode(booking.bookingCode, index);
+
+      await markSeatHoldBooked(tx, {
+        userId: booking.userId,
+        showtimeId: detail.showtimeId,
+        seatId: detail.seatId,
+        holdCode,
+        expiresAt: paymentDeadlineAt,
+      });
 
       await upsertPaidTicket(
         {
@@ -4018,7 +4958,17 @@ async function handlePayBooking(
         tx,
       );
     }
-  });
+    });
+  } catch (error) {
+    if (isSeatUnavailableError(error)) {
+      sendJson(response, 409, {
+        message: "Ghe trong don nay khong con kha dung de thanh toan. Vui long lien he nhan vien ho tro.",
+      });
+      return;
+    }
+
+    throw error;
+  }
 
   const [updatedBooking] = await fetchUserBookingHistory(user.id).then((bookings) =>
     bookings.filter((item) => item.id === booking.id),
@@ -4030,9 +4980,522 @@ async function handlePayBooking(
   });
 }
 
+async function getAdminPaymentTransactionUser(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập quản trị để xem giao dịch." });
+    return null;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền xem giao dịch thanh toán." });
+    return null;
+  }
+
+  return user;
+}
+
+async function fetchAdminPaymentTransactions() {
+  await expireOverduePendingBookings();
+
+  return prisma.payment.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    include: adminPaymentTransactionInclude,
+  });
+}
+
+function serializeAdminPaymentTransaction(payment: AdminPaymentTransactionRecord) {
+  const booking = payment.booking;
+  const primaryDetail = booking.bookingDetails[0] ?? null;
+  const primaryShowtime = primaryDetail?.showtime ?? null;
+  const primaryRoom = primaryShowtime?.room ?? null;
+  const amount = Number(payment.amount);
+  const displayAt = payment.paidAt ?? payment.createdAt;
+  const seatCodes = booking.bookingDetails.map((detail) => detail.seat.seatCode);
+  const seatTypeNames = [
+    ...new Set(booking.bookingDetails.map((detail) => detail.seat.seatType.name)),
+  ];
+  const transactionCode =
+    payment.transactionCode ?? `PAY-${payment.id.toString().padStart(6, "0")}`;
+
+  return {
+    id: payment.id,
+    bookingId: booking.id,
+    bookingCode: booking.bookingCode,
+    bookingStatus: booking.status,
+    transactionCode,
+    method: payment.method,
+    methodLabel: getAdminPaymentMethodLabel(payment.method),
+    status: payment.status,
+    statusLabel: getAdminPaymentStatusLabel(payment.status),
+    amount,
+    amountLabel: formatCurrency(amount),
+    paymentUrl: payment.paymentUrl,
+    createdAt: payment.createdAt.toISOString(),
+    paidAt: payment.paidAt?.toISOString() ?? null,
+    updatedAt: payment.updatedAt.toISOString(),
+    displayAt: displayAt.toISOString(),
+    customer: {
+      id: booking.user.id,
+      fullName: booking.user.fullName,
+      email: booking.user.email,
+      phone: booking.user.phone,
+    },
+    movie: primaryShowtime
+      ? {
+          id: primaryShowtime.movie.id,
+          slug: primaryShowtime.movie.slug,
+          title: primaryShowtime.movie.title,
+        }
+      : null,
+    movieTitle: primaryShowtime?.movie.title ?? "Chưa xác định",
+    showtime: primaryShowtime
+      ? {
+          id: primaryShowtime.id,
+          startTime: primaryShowtime.startTime.toISOString(),
+          endTime: primaryShowtime.endTime.toISOString(),
+          date: fullDateFormatter.format(primaryShowtime.startTime),
+          time: timeFormatter.format(primaryShowtime.startTime),
+        }
+      : null,
+    room: primaryRoom
+      ? {
+          id: primaryRoom.id,
+          name: primaryRoom.name,
+          cinemaName: primaryRoom.cinema.name,
+          cinemaAddress: primaryRoom.cinema.address,
+        }
+      : null,
+    seats: {
+      count: seatCodes.length,
+      codes: seatCodes,
+      label: seatCodes.join(", "),
+      types: seatTypeNames,
+    },
+    tickets: booking.tickets.map((ticket) => ({
+      id: ticket.id,
+      ticketCode: ticket.ticketCode,
+      status: ticket.status,
+    })),
+  };
+}
+
+async function handleGetAdminPaymentTransactions(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const requestUser = await getAdminPaymentTransactionUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const payments = await fetchAdminPaymentTransactions();
+  const transactions = payments.map(serializeAdminPaymentTransaction);
+  const successfulTransactions = transactions.filter(
+    (transaction) => transaction.status === "SUCCESS",
+  );
+  const pendingTransactions = transactions.filter(
+    (transaction) => transaction.status === "PENDING",
+  );
+  const failedTransactions = transactions.filter(
+    (transaction) => transaction.status === "FAILED",
+  );
+  const refundedTransactions = transactions.filter(
+    (transaction) => transaction.status === "REFUNDED",
+  );
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    transactions,
+    stats: {
+      totalTransactions: transactions.length,
+      successfulTransactions: successfulTransactions.length,
+      pendingTransactions: pendingTransactions.length,
+      failedTransactions: failedTransactions.length,
+      refundedTransactions: refundedTransactions.length,
+      onlineTransactions: transactions.filter((transaction) => transaction.method !== "CASH")
+        .length,
+      successfulRevenue: successfulTransactions.reduce(
+        (total, transaction) => total + transaction.amount,
+        0,
+      ),
+    },
+  });
+}
+
+async function getAdminRefundRequestUser(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập quản trị để xử lý hoàn tiền." });
+    return null;
+  }
+
+  if (!isAdminUser(user)) {
+    sendJson(response, 403, { message: "Bạn không có quyền xử lý hoàn tiền." });
+    return null;
+  }
+
+  return user;
+}
+
+const adminRefundRequestInclude = {
+  user: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+    },
+  },
+  reviewer: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+    },
+  },
+  booking: {
+    include: {
+      payments: {
+        orderBy: {
+          createdAt: "desc" as const,
+        },
+        take: 1,
+      },
+      tickets: {
+        orderBy: {
+          id: "asc" as const,
+        },
+        select: {
+          id: true,
+          ticketCode: true,
+          status: true,
+        },
+      },
+      bookingDetails: {
+        orderBy: {
+          id: "asc" as const,
+        },
+        include: {
+          seat: true,
+          showtime: {
+            include: {
+              movie: true,
+              room: {
+                include: {
+                  cinema: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+function getRefundTicketCode(refundRequest: AdminRefundRequestRecord) {
+  const ticketCodes = refundRequest.booking.tickets.map((ticket) => ticket.ticketCode);
+
+  if (ticketCodes.length === 0) {
+    return refundRequest.booking.bookingCode;
+  }
+
+  if (ticketCodes.length === 1) {
+    return ticketCodes[0];
+  }
+
+  return `${ticketCodes[0]} +${ticketCodes.length - 1}`;
+}
+
+function serializeAdminRefundRequest(refundRequest: AdminRefundRequestRecord) {
+  const booking = refundRequest.booking;
+  const primaryDetail = booking.bookingDetails[0] ?? null;
+  const primaryShowtime = primaryDetail?.showtime ?? null;
+  const primaryRoom = primaryShowtime?.room ?? null;
+  const payment = booking.payments[0] ?? null;
+  const amount = Number(refundRequest.amount);
+
+  return {
+    id: refundRequest.id,
+    refundCode: refundRequest.refundCode,
+    bookingId: booking.id,
+    bookingCode: booking.bookingCode,
+    ticketCode: getRefundTicketCode(refundRequest),
+    customer: {
+      id: refundRequest.user.id,
+      fullName: refundRequest.user.fullName,
+      email: refundRequest.user.email,
+      phone: refundRequest.user.phone,
+    },
+    customerName: refundRequest.user.fullName,
+    reason: refundRequest.reason,
+    status: refundRequest.status,
+    statusLabel: getRefundStatusLabel(refundRequest.status),
+    amount,
+    amountLabel: formatCurrency(amount),
+    bookedAt: booking.createdAt.toISOString(),
+    requestedAt: refundRequest.requestedAt.toISOString(),
+    reviewedAt: refundRequest.reviewedAt?.toISOString() ?? null,
+    reviewer: refundRequest.reviewer
+      ? {
+          id: refundRequest.reviewer.id,
+          fullName: refundRequest.reviewer.fullName,
+          email: refundRequest.reviewer.email,
+        }
+      : null,
+    reviewerNote: refundRequest.reviewerNote,
+    movieTitle: primaryShowtime?.movie.title ?? "Phim chưa xác định",
+    showtime: primaryShowtime
+      ? {
+          id: primaryShowtime.id,
+          startTime: primaryShowtime.startTime.toISOString(),
+          endTime: primaryShowtime.endTime.toISOString(),
+          date: fullDateFormatter.format(primaryShowtime.startTime),
+          time: timeFormatter.format(primaryShowtime.startTime),
+        }
+      : null,
+    room: primaryRoom
+      ? {
+          id: primaryRoom.id,
+          name: primaryRoom.name,
+          cinemaName: primaryRoom.cinema.name,
+          cinemaAddress: primaryRoom.cinema.address,
+        }
+      : null,
+    seats: {
+      count: booking.bookingDetails.length,
+      codes: booking.bookingDetails.map((detail) => detail.seat.seatCode),
+      label: booking.bookingDetails.map((detail) => detail.seat.seatCode).join(", "),
+    },
+    payment: payment
+      ? {
+          id: payment.id,
+          method: payment.method,
+          status: payment.status,
+          transactionCode: payment.transactionCode,
+          paidAt: payment.paidAt?.toISOString() ?? null,
+        }
+      : null,
+  };
+}
+
+async function fetchAdminRefundRequests() {
+  return getRefundRequestDelegate().findMany<AdminRefundRequestRecord[]>({
+    orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
+    include: adminRefundRequestInclude,
+  });
+}
+
+async function handleGetAdminRefundRequests(request: IncomingMessage, response: ServerResponse) {
+  const requestUser = await getAdminRefundRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const refundRequests = await fetchAdminRefundRequests();
+  const serializedRefundRequests = refundRequests.map(serializeAdminRefundRequest);
+  const pendingRequests = serializedRefundRequests.filter(
+    (refundRequest) => refundRequest.status === RefundStatus.PENDING,
+  );
+  const approvedRequests = serializedRefundRequests.filter(
+    (refundRequest) => refundRequest.status === RefundStatus.APPROVED,
+  );
+  const rejectedRequests = serializedRefundRequests.filter(
+    (refundRequest) => refundRequest.status === RefundStatus.REJECTED,
+  );
+  const overdueCutoff = Date.now() - 24 * 60 * 60 * 1000;
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    refundRequests: serializedRefundRequests,
+    stats: {
+      totalRequests: serializedRefundRequests.length,
+      pendingRequests: pendingRequests.length,
+      approvedRequests: approvedRequests.length,
+      rejectedRequests: rejectedRequests.length,
+      overdueRequests: pendingRequests.filter(
+        (refundRequest) => new Date(refundRequest.requestedAt).getTime() < overdueCutoff,
+      ).length,
+      approvedAmount: approvedRequests.reduce(
+        (total, refundRequest) => total + refundRequest.amount,
+        0,
+      ),
+    },
+  });
+}
+
+async function handleReviewAdminRefundRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  refundRequestId: number,
+  decision: "approve" | "reject",
+) {
+  const requestUser = await getAdminRefundRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const reviewerNote = stringField(body, "reviewerNote") || null;
+  const existingRefundRequest = await getRefundRequestDelegate().findUnique<AdminRefundRequestRecord | null>({
+    where: {
+      id: refundRequestId,
+    },
+    include: adminRefundRequestInclude,
+  });
+
+  if (!existingRefundRequest) {
+    sendJson(response, 404, { message: "Không tìm thấy yêu cầu hoàn tiền." });
+    return;
+  }
+
+  if (existingRefundRequest.status !== RefundStatus.PENDING) {
+    sendJson(response, 409, { message: "Yêu cầu hoàn tiền này đã được xử lý." });
+    return;
+  }
+
+  const isApproved = decision === "approve";
+  const latestPayment = existingRefundRequest.booking.payments[0] ?? null;
+
+  if (
+    isApproved &&
+    (existingRefundRequest.booking.status !== BookingStatus.CONFIRMED ||
+      latestPayment?.status !== "SUCCESS")
+  ) {
+    sendJson(response, 409, {
+      message: "Vé không còn ở trạng thái đủ điều kiện hoàn tiền.",
+    });
+    return;
+  }
+
+  const reviewedAt = new Date();
+  const nextStatus = isApproved ? RefundStatus.APPROVED : RefundStatus.REJECTED;
+  const notificationTitle = isApproved ? "Hoàn tiền được phê duyệt" : "Hoàn tiền bị từ chối";
+  const notificationMessage = isApproved
+    ? `Yêu cầu ${existingRefundRequest.refundCode} cho vé ${existingRefundRequest.booking.bookingCode} đã được phê duyệt. Số tiền hoàn: ${formatCurrency(Number(existingRefundRequest.amount))}.`
+    : `Yêu cầu ${existingRefundRequest.refundCode} cho vé ${existingRefundRequest.booking.bookingCode} đã bị từ chối.${reviewerNote ? ` Lý do: ${reviewerNote}` : ""}`;
+
+  try {
+    await runSerializableTransaction(async (tx) => {
+      const updatedRefundRequest = await getRefundRequestDelegate(tx).updateMany({
+        where: {
+          id: existingRefundRequest.id,
+          status: RefundStatus.PENDING,
+        },
+        data: {
+          status: nextStatus,
+          reviewedAt,
+          reviewerId: requestUser.id,
+          reviewerNote,
+        },
+      });
+
+      if (updatedRefundRequest.count !== 1) {
+        throw new Error("REFUND_REQUEST_ALREADY_REVIEWED");
+      }
+
+      if (isApproved) {
+        await tx.booking.update({
+          where: {
+            id: existingRefundRequest.bookingId,
+          },
+          data: {
+            status: BookingStatus.CANCELLED,
+          },
+        });
+
+        await tx.payment.updateMany({
+          where: {
+            bookingId: existingRefundRequest.bookingId,
+            status: "SUCCESS",
+          },
+          data: {
+            status: "REFUNDED",
+            paymentUrl: null,
+          },
+        });
+
+        await tx.ticket.updateMany({
+          where: {
+            bookingId: existingRefundRequest.bookingId,
+            status: {
+              not: "CANCELLED",
+            },
+          },
+          data: {
+            status: "CANCELLED",
+          },
+        });
+
+        for (const detail of existingRefundRequest.booking.bookingDetails) {
+          await tx.seatHold.updateMany({
+            where: {
+              userId: existingRefundRequest.userId,
+              showtimeId: detail.showtimeId,
+              seatId: detail.seatId,
+              status: {
+                in: [HoldStatus.HOLDING, HoldStatus.BOOKED],
+              },
+            },
+            data: {
+              status: HoldStatus.RELEASED,
+              expiresAt: reviewedAt,
+            },
+          });
+        }
+      }
+
+      await getNotificationDelegate(tx).create<NotificationRecord>({
+        data: {
+          userId: existingRefundRequest.userId,
+          title: notificationTitle,
+          message: notificationMessage,
+          type: isApproved ? "REFUND_APPROVED" : "REFUND_REJECTED",
+          metadata: {
+            refundRequestId: existingRefundRequest.id,
+            refundCode: existingRefundRequest.refundCode,
+            bookingId: existingRefundRequest.bookingId,
+            bookingCode: existingRefundRequest.booking.bookingCode,
+          },
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "REFUND_REQUEST_ALREADY_REVIEWED") {
+      sendJson(response, 409, { message: "Yêu cầu hoàn tiền này đã được xử lý." });
+      return;
+    }
+
+    throw error;
+  }
+
+  const updatedRefundRequest = await getRefundRequestDelegate().findUnique<AdminRefundRequestRecord | null>({
+    where: {
+      id: existingRefundRequest.id,
+    },
+    include: adminRefundRequestInclude,
+  });
+
+  sendJson(response, 200, {
+    message: isApproved
+      ? "Đã phê duyệt hoàn tiền và gửi thông báo cho khách hàng."
+      : "Đã từ chối hoàn tiền và gửi thông báo cho khách hàng.",
+    refundRequest: updatedRefundRequest
+      ? serializeAdminRefundRequest(updatedRefundRequest)
+      : null,
+  });
+}
+
 async function fetchTicketBookingShowtimes() {
   await expireOverduePendingBookings();
   await refreshStaleTicketBookingShowtimes();
+  await syncBookingSeatArtifactsFromDatabase();
 
   const showtimes = await prisma.showtime.findMany({
     where: {
@@ -4094,12 +5557,7 @@ async function fetchTicketBookingShowtimes() {
         },
       },
       seatHolds: {
-        where: {
-          status: HoldStatus.HOLDING,
-          expiresAt: {
-            gt: new Date(),
-          },
-        },
+        where: getActiveSeatHoldWhere(),
         select: {
           seatId: true,
         },
@@ -4364,6 +5822,7 @@ async function handleGetTicketBookingOptions(_request: IncomingMessage, response
 
 async function fetchTicketBookingSeatMap(showtimeId: number) {
   await expireOverduePendingBookings();
+  await syncBookingSeatArtifactsFromDatabase({ showtimeId });
 
   return prisma.showtime.findUnique({
     where: {
@@ -4426,14 +5885,10 @@ async function fetchTicketBookingSeatMap(showtimeId: number) {
         },
       },
       seatHolds: {
-        where: {
-          status: HoldStatus.HOLDING,
-          expiresAt: {
-            gt: new Date(),
-          },
-        },
+        where: getActiveSeatHoldWhere(),
         select: {
           seatId: true,
+          status: true,
         },
       },
     },
@@ -4515,7 +5970,16 @@ function serializeTicketBookingSeatMap(showtime: TicketBookingSeatMapRecord) {
   }
 
   for (const seatHold of showtime.seatHolds) {
+    if (seatHold.status === HoldStatus.BOOKED) {
+      bookedSeatIds.add(seatHold.seatId);
+      continue;
+    }
+
     pendingPaymentSeatIds.add(seatHold.seatId);
+  }
+
+  for (const seatId of bookedSeatIds) {
+    pendingPaymentSeatIds.delete(seatId);
   }
 
   const showtimeForSerialization = {
@@ -4802,12 +6266,7 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
         },
       },
       seatHolds: {
-        where: {
-          status: HoldStatus.HOLDING,
-          expiresAt: {
-            gt: new Date(),
-          },
-        },
+        where: getActiveSeatHoldWhere(),
         select: {
           seatId: true,
         },
@@ -4885,9 +6344,46 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
   const discountAmount = appliedPromotion?.discountAmount ?? 0;
   const finalAmount = appliedPromotion?.finalAmount ?? totalAmount;
   const bookingCode = await createUniqueBookingCode();
+  const paymentDeadlineAt = new Date(Date.now() + pendingPaymentWindowMs);
 
   try {
-    const booking = await prisma.$transaction(async (tx) => {
+    const booking = await runSerializableTransaction(async (tx) => {
+      const activeBookingDetails = await tx.bookingDetail.findMany({
+        where: {
+          showtimeId,
+          seatId: {
+            in: lineItems.map((item) => item.seatId),
+          },
+          booking: {
+            status: {
+              in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+            },
+          },
+        },
+        select: {
+          seatId: true,
+        },
+      });
+
+      if (activeBookingDetails.length > 0) {
+        throw new Error(seatUnavailableErrorMessage);
+      }
+
+      const now = new Date();
+
+      for (let index = 0; index < lineItems.length; index += 1) {
+        const item = lineItems[index];
+
+        await acquireSeatHold(tx, {
+          userId: user.id,
+          showtimeId,
+          seatId: item.seatId,
+          holdCode: createSeatHoldCode(bookingCode, index),
+          expiresAt: paymentDeadlineAt,
+          now,
+        });
+      }
+
       const createdBooking = await tx.booking.create({
         data: {
           userId: user.id,
@@ -4963,13 +6459,20 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
       booking: {
         id: booking.id,
         bookingCode: booking.bookingCode,
-        paymentDeadlineAt: new Date(Date.now() + pendingPaymentWindowMs).toISOString(),
+        paymentDeadlineAt: paymentDeadlineAt.toISOString(),
       },
     });
   } catch (error) {
     if (error instanceof Error && error.message === "PROMOTION_UNAVAILABLE") {
       sendJson(response, 409, {
         message: "Mã giảm giá vừa hết hiệu lực hoặc hết lượt sử dụng. Vui lòng áp dụng lại.",
+      });
+      return;
+    }
+
+    if (isSeatUnavailableError(error)) {
+      sendJson(response, 409, {
+        message: "Mot hoac nhieu ghe vua duoc giu hoac dat boi nguoi khac. Vui long chon lai ghe.",
       });
       return;
     }
@@ -5564,6 +7067,86 @@ async function handleChatbotQuestion(request: IncomingMessage, response: ServerR
   sendJson(response, 200, reply);
 }
 
+function serializeAccountNotification(notification: {
+  id: number;
+  title: string;
+  message: string;
+  type: string;
+  isRead: boolean;
+  metadata: Prisma.JsonValue | null;
+  readAt: Date | null;
+  createdAt: Date;
+}) {
+  return {
+    id: notification.id,
+    title: notification.title,
+    message: notification.message,
+    type: notification.type,
+    isRead: notification.isRead,
+    metadata: notification.metadata,
+    readAt: notification.readAt?.toISOString() ?? null,
+    createdAt: notification.createdAt.toISOString(),
+  };
+}
+
+async function handleGetAccountNotifications(request: IncomingMessage, response: ServerResponse) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để xem thông báo." });
+    return;
+  }
+
+  const [notifications, unreadCount] = await Promise.all([
+    getNotificationDelegate().findMany<NotificationRecord[]>({
+      where: {
+        userId: user.id,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 30,
+    }),
+    getNotificationDelegate().count({
+      where: {
+        userId: user.id,
+        isRead: false,
+      },
+    }),
+  ]);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    unreadCount,
+    notifications: notifications.map(serializeAccountNotification),
+  });
+}
+
+async function handleMarkAccountNotificationsRead(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để cập nhật thông báo." });
+    return;
+  }
+
+  const readAt = new Date();
+
+  await getNotificationDelegate().updateMany({
+    where: {
+      userId: user.id,
+      isRead: false,
+    },
+    data: {
+      isRead: true,
+      readAt,
+    },
+  });
+
+  sendJson(response, 200, { message: "Đã đánh dấu thông báo là đã đọc." });
+}
+
 async function handleRequest(request: IncomingMessage, response: ServerResponse) {
   setCorsHeaders(response);
 
@@ -5737,6 +7320,27 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/payments/transactions") {
+      await handleGetAdminPaymentTransactions(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/refund-requests") {
+      await handleGetAdminRefundRequests(request, response);
+      return;
+    }
+
+    const adminRefundReviewMatch = requestUrl.pathname.match(
+      /^\/api\/admin\/refund-requests\/(\d+)\/(approve|reject)$/,
+    );
+
+    if (request.method === "POST" && adminRefundReviewMatch) {
+      const refundRequestId = Number.parseInt(adminRefundReviewMatch[1], 10);
+      const decision = adminRefundReviewMatch[2] as "approve" | "reject";
+      await handleReviewAdminRefundRequest(request, response, refundRequestId, decision);
+      return;
+    }
+
     const adminAccountMatch = requestUrl.pathname.match(/^\/api\/admin\/accounts\/(\d+)$/);
 
     if (adminAccountMatch) {
@@ -5810,8 +7414,28 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/api/account/notifications") {
+      await handleGetAccountNotifications(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/account/notifications/read-all") {
+      await handleMarkAccountNotificationsRead(request, response);
+      return;
+    }
+
     if (request.method === "GET" && requestUrl.pathname === "/api/account/bookings") {
       await handleGetBookingHistory(request, response);
+      return;
+    }
+
+    const accountBookingRefundMatch = requestUrl.pathname.match(
+      /^\/api\/account\/bookings\/(\d+)\/refund$/,
+    );
+
+    if (request.method === "POST" && accountBookingRefundMatch) {
+      const bookingId = Number.parseInt(accountBookingRefundMatch[1], 10);
+      await handleCreateRefundRequest(request, response, bookingId);
       return;
     }
 

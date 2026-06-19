@@ -71,6 +71,38 @@ function getDiscountAmount(
 }
 
 async function rebuildBookingRelations(bookingId: number) {
+  const booking = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      userId: true,
+      bookingDetails: {
+        select: {
+          showtimeId: true,
+          seatId: true,
+        },
+      },
+    },
+  });
+
+  if (booking) {
+    for (const detail of booking.bookingDetails) {
+      await prisma.seatHold.updateMany({
+        where: {
+          userId: booking.userId,
+          showtimeId: detail.showtimeId,
+          seatId: detail.seatId,
+          status: {
+            in: ["HOLDING", "BOOKED"],
+          },
+        },
+        data: {
+          status: "RELEASED",
+          expiresAt: new Date(),
+        },
+      });
+    }
+  }
+
   await prisma.bookingPromotion.deleteMany({ where: { bookingId } });
   await prisma.payment.deleteMany({ where: { bookingId } });
   await prisma.ticket.deleteMany({ where: { bookingId } });
@@ -201,25 +233,67 @@ export async function seedBookings() {
 
     for (let index = 0; index < lineItems.length; index += 1) {
       const item = lineItems[index];
+      const holdCode = `HOLD-${plan.bookingCode}-${index + 1}`;
 
-      await prisma.bookingDetail.upsert({
-        where: {
-          showtimeId_seatId: {
-            showtimeId: showtime.id,
-            seatId: item.seat.id,
-          },
-        },
-        update: {
-          bookingId: booking.id,
-          price: item.price,
-        },
-        create: {
+      await prisma.bookingDetail.create({
+        data: {
           bookingId: booking.id,
           showtimeId: showtime.id,
           seatId: item.seat.id,
           price: item.price,
         },
       });
+
+      if (plan.status === "PENDING" || plan.status === "CONFIRMED") {
+        const existingHold = await prisma.seatHold.findFirst({
+          where: {
+            OR: [
+              { holdCode },
+              {
+                showtimeId: showtime.id,
+                seatId: item.seat.id,
+              },
+            ],
+          },
+        });
+        const holdData = {
+          userId: user.id,
+          showtimeId: showtime.id,
+          seatId: item.seat.id,
+          holdCode,
+          status: plan.status === "CONFIRMED" ? ("BOOKED" as const) : ("HOLDING" as const),
+          expiresAt:
+            plan.status === "CONFIRMED"
+              ? showtime.endTime
+              : new Date(Date.now() + 5 * 60 * 1000),
+        };
+
+        if (existingHold) {
+          await prisma.seatHold.update({
+            where: { id: existingHold.id },
+            data: holdData,
+          });
+        } else {
+          await prisma.seatHold.create({
+            data: holdData,
+          });
+        }
+      } else {
+        await prisma.seatHold.updateMany({
+          where: {
+            userId: user.id,
+            showtimeId: showtime.id,
+            seatId: item.seat.id,
+            status: {
+              in: ["HOLDING", "BOOKED"],
+            },
+          },
+          data: {
+            status: "RELEASED",
+            expiresAt: new Date(),
+          },
+        });
+      }
 
       if (plan.status === "CONFIRMED") {
         await upsertTicket({
