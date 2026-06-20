@@ -7,6 +7,7 @@ import {
   LoaderCircle,
   LogIn,
   MessageSquareText,
+  Reply,
   Send,
   Star,
   UserCircle,
@@ -18,7 +19,7 @@ import {
   type AuthUser,
 } from "@/lib/auth";
 import type { HomeReview } from "@/lib/home-movies";
-import { submitMovieReview } from "@/lib/movie-reviews-api";
+import { submitMovieReview, submitMovieReviewReply } from "@/lib/movie-reviews-api";
 
 type MovieReviewsSectionProps = {
   movieId: number;
@@ -45,7 +46,9 @@ export default function MovieReviewsSection({
   const [authReady, setAuthReady] = useState(false);
   const [selectedRating, setSelectedRating] = useState(5);
   const [comment, setComment] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [replyingReviewId, setReplyingReviewId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const authUserIdRef = useRef<number | null>(null);
@@ -140,6 +143,69 @@ export default function MovieReviewsSection({
     }
   }
 
+  async function handleSubmitReply(
+    event: FormEvent<HTMLFormElement>,
+    reviewId: number,
+  ) {
+    event.preventDefault();
+
+    if (!authUser) {
+      setNotice("");
+      setError("Vui lòng đăng nhập để trả lời bình luận phim.");
+      return;
+    }
+
+    const trimmedContent = (replyDrafts[reviewId] ?? "").trim();
+
+    if (!trimmedContent) {
+      setNotice("");
+      setError("Vui lòng nhập nội dung trả lời.");
+      return;
+    }
+
+    if (trimmedContent.length > 1000) {
+      setNotice("");
+      setError("Nội dung trả lời không được vượt quá 1000 ký tự.");
+      return;
+    }
+
+    setReplyingReviewId(reviewId);
+    setNotice("");
+    setError("");
+
+    try {
+      const data = await submitMovieReviewReply(movieId, reviewId, {
+        content: trimmedContent,
+      });
+      const updatedMovie = data.movie;
+
+      setReviews(updatedMovie.reviews);
+      setAverageRating(updatedMovie.rating);
+      setReviewCount(updatedMovie.reviewCount);
+      setReplyDrafts((current) => ({
+        ...current,
+        [reviewId]: "",
+      }));
+      setNotice(data.message ?? "Đã gửi trả lời bình luận.");
+      router.refresh();
+    } catch (replyError) {
+      setError(
+        replyError instanceof Error
+          ? replyError.message
+          : "Không thể gửi trả lời bình luận.",
+      );
+    } finally {
+      setReplyingReviewId(null);
+    }
+  }
+
+  function updateReplyDraft(reviewId: number, value: string) {
+    setReplyDrafts((current) => ({
+      ...current,
+      [reviewId]: value,
+    }));
+  }
+
   return (
     <section className="mt-8 rounded-lg border border-white/10 bg-[#151719] p-5 sm:p-7">
       <div className="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-center lg:justify-between">
@@ -212,6 +278,73 @@ export default function MovieReviewsSection({
                   <p className="mt-4 text-sm leading-6 text-white/68">
                     {review.comment || "Người dùng này chỉ đánh giá bằng sao."}
                   </p>
+
+                  {review.replies.length > 0 ? (
+                    <div className="mt-4 grid gap-3 border-l border-white/10 pl-3 sm:pl-4">
+                      {review.replies.map((reply) => (
+                        <div
+                          key={reply.id}
+                          className={`rounded-md border px-3 py-3 ${
+                            reply.isAdminReply
+                              ? "border-red-400/20 bg-red-500/10"
+                              : "border-white/10 bg-white/5"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-xs font-black text-white">
+                              {reply.userName}
+                            </p>
+                            {reply.isAdminReply ? (
+                              <span className="rounded-md bg-red-500/20 px-2 py-0.5 text-[10px] font-black uppercase text-red-100">
+                                Quản trị
+                              </span>
+                            ) : null}
+                            {authUser?.id === reply.userId ? (
+                              <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-black uppercase text-white/70">
+                                Của bạn
+                              </span>
+                            ) : null}
+                            <span className="text-xs font-semibold text-white/35">
+                              {formatReviewDate(reply.createdAt)}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-white/68">
+                            {reply.content}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {authReady && authUser ? (
+                    <form
+                      onSubmit={(event) => handleSubmitReply(event, review.id)}
+                      className="mt-4 flex flex-col gap-2 sm:flex-row"
+                    >
+                      <input
+                        value={replyDrafts[review.id] ?? ""}
+                        maxLength={1000}
+                        onChange={(event) => updateReplyDraft(review.id, event.target.value)}
+                        placeholder={`Trả lời ${review.userName}...`}
+                        className="h-10 min-w-0 flex-1 rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-white outline-none transition placeholder:text-white/28 focus:border-red-400"
+                      />
+                      <button
+                        type="submit"
+                        disabled={
+                          replyingReviewId === review.id ||
+                          !(replyDrafts[review.id] ?? "").trim()
+                        }
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/10 px-3 text-sm font-black text-white transition hover:border-red-300 hover:text-red-100 disabled:cursor-not-allowed disabled:text-white/30"
+                      >
+                        {replyingReviewId === review.id ? (
+                          <LoaderCircle size={16} className="animate-spin" />
+                        ) : (
+                          <Reply size={16} />
+                        )}
+                        Gửi
+                      </button>
+                    </form>
+                  ) : null}
                 </article>
               ))}
             </div>

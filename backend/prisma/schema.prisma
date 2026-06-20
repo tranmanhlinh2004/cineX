@@ -61,6 +61,7 @@ model User {
   reviewedRefundRequests RefundRequest[] @relation("RefundRequestReviewer")
   refreshTokens          RefreshToken[]
   reviews                Review[]
+  reviewReplies          ReviewReply[]
   role                   Role            @relation(fields: [roleId], references: [id])
 
   @@map("users")
@@ -423,10 +424,26 @@ model Review {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   movie     Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  replies   ReviewReply[]
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, movieId])
   @@map("reviews")
+}
+
+model ReviewReply {
+  id        Int      @id @default(autoincrement())
+  reviewId  Int
+  userId    Int
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId, createdAt])
+  @@index([userId])
+  @@map("review_replies")
 }
 
 model ContactMessage {

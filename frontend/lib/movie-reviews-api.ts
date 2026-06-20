@@ -9,6 +9,10 @@ export type MovieReviewPayload = {
   comment: string;
 };
 
+export type MovieReviewReplyPayload = {
+  content: string;
+};
+
 type MovieReviewResponse = Omit<MovieDetailData, "movie"> & {
   movie: NonNullable<MovieDetailData["movie"]>;
   message?: string;
@@ -49,6 +53,47 @@ export async function submitMovieReview(
 
   if (!data?.movie) {
     throw new Error("Phản hồi đánh giá không hợp lệ.");
+  }
+
+  return data as MovieReviewResponse;
+}
+
+export async function submitMovieReviewReply(
+  movieId: number,
+  reviewId: number,
+  payload: MovieReviewReplyPayload,
+) {
+  const token = getAuthToken();
+
+  if (!token) {
+    throw new Error("Vui lòng đăng nhập để trả lời bình luận phim.");
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}/movies/${movieId}/reviews/${reviewId}/replies`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("Không kết nối được backend. Hãy chạy backend ở cổng 4000.");
+  }
+
+  const data = (await response.json().catch(() => null)) as
+    | ({ message?: string } & Partial<MovieDetailData>)
+    | null;
+
+  if (!response.ok) {
+    throw new Error(data?.message || "Không thể gửi trả lời bình luận.");
+  }
+
+  if (!data?.movie) {
+    throw new Error("Phản hồi trả lời bình luận không hợp lệ.");
   }
 
   return data as MovieReviewResponse;

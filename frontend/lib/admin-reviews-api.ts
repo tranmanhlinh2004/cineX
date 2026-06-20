@@ -23,12 +23,27 @@ export type AdminMovieReview = {
   status: AdminMovieReviewStatusCode;
   statusLabel: string;
   isHidden: boolean;
+  replyCount: number;
+  replies: AdminMovieReviewReply[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminMovieReviewReply = {
+  id: number;
+  reviewId: number;
+  userId: number;
+  userName: string;
+  userEmail: string;
+  content: string;
+  isAdminReply: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
 export type AdminMovieReviewStats = {
   totalReviews: number;
+  totalReplies: number;
   visibleReviews: number;
   hiddenReviews: number;
   pendingReviews: number;
@@ -47,8 +62,15 @@ export type AdminMovieReviewMutationResponse = {
   review: AdminMovieReview;
 };
 
+export type AdminMovieReviewReplyResponse = {
+  message: string;
+  reply: AdminMovieReviewReply;
+  review: AdminMovieReview;
+};
+
 type RequestAdminOptions = {
   method?: "GET" | "POST";
+  body?: unknown;
 };
 
 async function requestAdmin<T>(path: string, options: RequestAdminOptions = {}) {
@@ -67,6 +89,7 @@ async function requestAdmin<T>(path: string, options: RequestAdminOptions = {}) 
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
+      body: options.body ? JSON.stringify(options.body) : undefined,
     });
   } catch {
     throw new Error("Không kết nối được backend.");
@@ -96,5 +119,12 @@ export function hideAdminMovieReview(id: number) {
 export function showAdminMovieReview(id: number) {
   return requestAdmin<AdminMovieReviewMutationResponse>(`/admin/reviews/${id}/show`, {
     method: "POST",
+  });
+}
+
+export function sendAdminMovieReviewReply(id: number, content: string) {
+  return requestAdmin<AdminMovieReviewReplyResponse>(`/admin/reviews/${id}/replies`, {
+    method: "POST",
+    body: { content },
   });
 }

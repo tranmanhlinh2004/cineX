@@ -1,5 +1,6 @@
 import "dotenv/config";
 import bcrypt from "bcrypt";
+import QRCode from "qrcode";
 import {
   BookingStatus,
   HoldStatus,
@@ -68,6 +69,7 @@ const refundReasonOptions = [
   "Lý do cá nhân",
   "Khác",
 ] as const;
+const ticketQrDataUrlPrefix = "data:image/png;base64,";
 const paymentMethodSet = new Set<string>(paymentMethods);
 const ticketBookingPaymentMethodSet = new Set<string>(ticketBookingPaymentMethods);
 const seatUnavailableErrorMessage = "SEAT_UNAVAILABLE";
@@ -604,6 +606,22 @@ function getMovieInclude(
             fullName: true,
           },
         },
+        replies: {
+          orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }],
+          include: {
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                role: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     showtimes: {
@@ -751,6 +769,32 @@ function serializeHomeShowtime(movie: HomeMovieRecord, showtime: HomeShowtimeRec
   };
 }
 
+function serializeHomeReviewReply(reply: {
+  id: number;
+  reviewId: number;
+  content: string;
+  createdAt: Date;
+  updatedAt: Date;
+  user: {
+    id: number;
+    fullName: string;
+    role: {
+      name: string;
+    };
+  };
+}) {
+  return {
+    id: reply.id,
+    reviewId: reply.reviewId,
+    userId: reply.user.id,
+    userName: reply.user.fullName,
+    content: reply.content,
+    isAdminReply: isAdminRoleName(reply.user.role.name),
+    createdAt: reply.createdAt.toISOString(),
+    updatedAt: reply.updatedAt.toISOString(),
+  };
+}
+
 function serializeHomeMovie(movie: HomeMovieRecord) {
   const genres = movie.movieGenres.map((movieGenre) => movieGenre.genre.name);
   const image = movie.posterUrl ?? movie.movieImages[0]?.imageUrl ?? "/movies/demo.png";
@@ -791,6 +835,7 @@ function serializeHomeMovie(movie: HomeMovieRecord) {
       comment: review.comment,
       createdAt: review.createdAt.toISOString(),
       userName: review.user.fullName,
+      replies: review.replies.map(serializeHomeReviewReply),
     })),
     genres,
     images: movie.movieImages.map((imageItem) => ({
@@ -1541,6 +1586,82 @@ async function handleCreateMovieReview(
   });
 }
 
+async function handleCreateMovieReviewReply(
+  request: IncomingMessage,
+  response: ServerResponse,
+  movieId: number,
+  reviewId: number,
+) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để trả lời bình luận phim." });
+    return;
+  }
+
+  const body = await readJson(request);
+  const content = stringField(body, "content") || stringField(body, "message");
+
+  if (!content) {
+    sendJson(response, 400, { message: "Vui lòng nhập nội dung trả lời." });
+    return;
+  }
+
+  if (content.length > 1000) {
+    sendJson(response, 400, { message: "Nội dung trả lời không được vượt quá 1000 ký tự." });
+    return;
+  }
+
+  const review = await prisma.review.findFirst({
+    where: {
+      id: reviewId,
+      movieId,
+      isHidden: false,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!review) {
+    sendJson(response, 404, { message: "Không tìm thấy bình luận phim để trả lời." });
+    return;
+  }
+
+  const reply = await prisma.reviewReply.create({
+    data: {
+      reviewId,
+      userId: user.id,
+      content,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          role: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  const movieDetailData = await loadMovieDetailData(movieId);
+
+  if (!movieDetailData) {
+    sendJson(response, 404, { message: "Không tìm thấy phim." });
+    return;
+  }
+
+  sendJson(response, 201, {
+    message: "Đã gửi trả lời bình luận.",
+    reply: serializeHomeReviewReply(reply),
+    ...movieDetailData,
+  });
+}
+
 async function isPasswordMatch(inputPassword: string, storedPassword: string) {
   const looksLikeBcryptHash = /^\$2[aby]\$\d{2}\$/.test(storedPassword) && storedPassword.length === 60;
 
@@ -1587,8 +1708,12 @@ async function getAuthenticatedUser(request: IncomingMessage) {
   return refreshToken.user;
 }
 
+function isAdminRoleName(roleName: string) {
+  return adminRoles.has(roleName.toUpperCase());
+}
+
 function isAdminUser(user: { role: { name: string } }) {
-  return adminRoles.has(user.role.name.toUpperCase());
+  return isAdminRoleName(user.role.name);
 }
 
 function getUserPermissionSet(user: UserWithRole) {
@@ -1965,6 +2090,32 @@ function getActiveSeatHoldWhere(now = new Date()): Prisma.SeatHoldWhereInput {
 
 function createSeatHoldCode(bookingCode: string, index: number) {
   return `HOLD-${bookingCode}-${index + 1}`;
+}
+
+function isTicketQrDataUrl(value: string | null | undefined) {
+  return Boolean(value?.startsWith(ticketQrDataUrlPrefix));
+}
+
+function createTicketQrPayload(params: { ticketCode: string; bookingCode: string }) {
+  return JSON.stringify({
+    ticketCode: params.ticketCode,
+    code: params.ticketCode,
+    bookingCode: params.bookingCode,
+    nonce: randomBytes(16).toString("hex"),
+    issuedAt: new Date().toISOString(),
+  });
+}
+
+async function createTicketQrCodeDataUrl(params: { ticketCode: string; bookingCode: string }) {
+  return QRCode.toDataURL(createTicketQrPayload(params), {
+    errorCorrectionLevel: "M",
+    margin: 2,
+    width: 360,
+    color: {
+      dark: "#111827",
+      light: "#FFFFFF",
+    },
+  });
 }
 
 function isSeatUnavailableError(error: unknown) {
@@ -3464,11 +3615,12 @@ async function handleGetAdminGenres(request: IncomingMessage, response: ServerRe
 async function getAdminReviewRequestUser(
   request: IncomingMessage,
   response: ServerResponse,
+  permission = "review.manage",
 ) {
   return getRequiredAdminUser(request, response, {
-    permission: "review.manage",
-    loginMessage: "Vui lòng đăng nhập quản trị để xem đánh giá.",
-    deniedMessage: "Tài khoản không được cấp quyền quản lý đánh giá.",
+    permission,
+    loginMessage: "Vui lòng đăng nhập quản trị để quản lý đánh giá.",
+    deniedMessage: "Tài khoản không được cấp quyền thao tác với đánh giá.",
   });
 }
 
@@ -3489,11 +3641,44 @@ const adminMovieReviewInclude = {
       phone: true,
     },
   },
+  replies: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  },
 } as const satisfies Prisma.ReviewInclude;
 
 type AdminMovieReviewRecord = Prisma.ReviewGetPayload<{
   include: typeof adminMovieReviewInclude;
 }>;
+
+function serializeAdminMovieReviewReply(
+  reply: AdminMovieReviewRecord["replies"][number],
+) {
+  return {
+    id: reply.id,
+    reviewId: reply.reviewId,
+    userId: reply.user.id,
+    userName: reply.user.fullName,
+    userEmail: reply.user.email,
+    content: reply.content,
+    isAdminReply: isAdminRoleName(reply.user.role.name),
+    createdAt: reply.createdAt.toISOString(),
+    updatedAt: reply.updatedAt.toISOString(),
+  };
+}
 
 function getAdminMovieReviewStatusLabel(isHidden: boolean) {
   return isHidden ? "Đã ẩn" : "Hiển thị";
@@ -3520,6 +3705,8 @@ function serializeAdminMovieReview(review: AdminMovieReviewRecord) {
     status,
     statusLabel: getAdminMovieReviewStatusLabel(review.isHidden),
     isHidden: review.isHidden,
+    replyCount: review.replies.length,
+    replies: review.replies.map(serializeAdminMovieReviewReply),
     createdAt: review.createdAt.toISOString(),
     updatedAt: review.updatedAt.toISOString(),
   };
@@ -3555,6 +3742,7 @@ async function handleGetAdminMovieReviews(
     reviews,
     stats: {
       totalReviews: reviews.length,
+      totalReplies: reviews.reduce((total, review) => total + review.replyCount, 0),
       visibleReviews: visibleReviews.length,
       hiddenReviews: hiddenReviews.length,
       pendingReviews: 0,
@@ -3602,6 +3790,84 @@ async function handleSetAdminMovieReviewVisibility(
       action === "hide"
         ? "Đã ẩn đánh giá khỏi website."
         : "Đã hiển thị lại đánh giá trên website.",
+    review: serializeAdminMovieReview(review),
+  });
+}
+
+async function handleCreateAdminMovieReviewReply(
+  request: IncomingMessage,
+  response: ServerResponse,
+  reviewId: number,
+) {
+  const requestUser = await getAdminReviewRequestUser(request, response, "review.reply");
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const content = stringField(body, "content") || stringField(body, "message");
+
+  if (!content) {
+    sendJson(response, 400, { message: "Vui lòng nhập nội dung trả lời." });
+    return;
+  }
+
+  if (content.length > 1000) {
+    sendJson(response, 400, { message: "Nội dung trả lời không được vượt quá 1000 ký tự." });
+    return;
+  }
+
+  const existingReview = await prisma.review.findUnique({
+    where: {
+      id: reviewId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!existingReview) {
+    sendJson(response, 404, { message: "Không tìm thấy đánh giá." });
+    return;
+  }
+
+  const reply = await prisma.reviewReply.create({
+    data: {
+      reviewId,
+      userId: requestUser.id,
+      content,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  const review = await prisma.review.findUnique({
+    where: {
+      id: reviewId,
+    },
+    include: adminMovieReviewInclude,
+  });
+
+  if (!review) {
+    sendJson(response, 500, { message: "Không thể tải lại đánh giá sau khi trả lời." });
+    return;
+  }
+
+  sendJson(response, 201, {
+    message: "Đã gửi trả lời bình luận.",
+    reply: serializeAdminMovieReviewReply(reply),
     review: serializeAdminMovieReview(review),
   });
 }
@@ -4772,12 +5038,21 @@ async function fetchUserBookingHistory(userId: number) {
         },
       },
       tickets: {
+        orderBy: {
+          id: "asc",
+        },
         select: {
           id: true,
           ticketCode: true,
           qrCode: true,
           status: true,
           usedAt: true,
+          seat: {
+            select: {
+              id: true,
+              seatCode: true,
+            },
+          },
         },
       },
     },
@@ -4932,6 +5207,10 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
       status: ticket.status,
       statusLabel: getTicketStatusLabel(ticket.status),
       usedAt: ticket.usedAt?.toISOString() ?? null,
+      seat: {
+        id: ticket.seat.id,
+        seatCode: ticket.seat.seatCode,
+      },
     })),
     refund: {
       canRequest: canRequestRefund,
@@ -4972,7 +5251,6 @@ async function upsertPaidTicket(
 ) {
   const client = tx ?? prisma;
   const ticketCode = `${params.bookingCode}-${params.index + 1}`;
-  const qrCode = `QR-${ticketCode}`;
   const existingTicket = await client.ticket.findFirst({
     where: {
       showtimeId: params.showtimeId,
@@ -4984,6 +5262,13 @@ async function upsertPaidTicket(
     if (existingTicket.bookingId !== params.bookingId) {
       throw new Error(seatUnavailableErrorMessage);
     }
+
+    const qrCode = isTicketQrDataUrl(existingTicket.qrCode)
+      ? existingTicket.qrCode
+      : await createTicketQrCodeDataUrl({
+          ticketCode,
+          bookingCode: params.bookingCode,
+        });
 
     if (
       existingTicket.ticketCode === ticketCode &&
@@ -5010,6 +5295,11 @@ async function upsertPaidTicket(
     });
     return;
   }
+
+  const qrCode = await createTicketQrCodeDataUrl({
+    ticketCode,
+    bookingCode: params.bookingCode,
+  });
 
   await client.ticket.create({
     data: {
@@ -8249,6 +8539,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    const movieReviewReplyMatch = requestUrl.pathname.match(
+      /^\/api\/movies\/(\d+)\/reviews\/(\d+)\/replies$/,
+    );
+
+    if (request.method === "POST" && movieReviewReplyMatch) {
+      const movieId = Number.parseInt(movieReviewReplyMatch[1], 10);
+      const reviewId = Number.parseInt(movieReviewReplyMatch[2], 10);
+      await handleCreateMovieReviewReply(request, response, movieId, reviewId);
+      return;
+    }
+
     const movieReviewMatch = requestUrl.pathname.match(/^\/api\/movies\/(\d+)\/reviews$/);
 
     if (request.method === "POST" && movieReviewMatch) {
@@ -8425,6 +8726,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const reviewId = Number.parseInt(adminReviewVisibilityMatch[1], 10);
       const action = adminReviewVisibilityMatch[2] as "hide" | "show";
       await handleSetAdminMovieReviewVisibility(request, response, reviewId, action);
+      return;
+    }
+
+    const adminReviewReplyMatch = requestUrl.pathname.match(
+      /^\/api\/admin\/reviews\/(\d+)\/replies$/,
+    );
+
+    if (request.method === "POST" && adminReviewReplyMatch) {
+      const reviewId = Number.parseInt(adminReviewReplyMatch[1], 10);
+      await handleCreateAdminMovieReviewReply(request, response, reviewId);
       return;
     }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -12,12 +12,15 @@ import {
   MessageSquare,
   RefreshCw,
   Search,
+  Send,
   Star,
+  XCircle,
 } from "lucide-react";
 import { PermissionButton } from "@/components/admin/PermissionControls";
 import {
   getAdminMovieReviews,
   hideAdminMovieReview,
+  sendAdminMovieReviewReply,
   showAdminMovieReview,
   type AdminMovieReview,
   type AdminMovieReviewStats,
@@ -27,6 +30,7 @@ import { showToast } from "@/lib/toast";
 
 const emptyStats: AdminMovieReviewStats = {
   totalReviews: 0,
+  totalReplies: 0,
   visibleReviews: 0,
   hiddenReviews: 0,
   pendingReviews: 0,
@@ -56,9 +60,11 @@ export default function AdminMovieReviewsPageClient() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] =
     useState<"ALL" | AdminMovieReviewStatusCode>("ALL");
+  const [selectedReview, setSelectedReview] = useState<AdminMovieReview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionId, setActionId] = useState<number | null>(null);
+  const [replyingReviewId, setReplyingReviewId] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   const loadReviews = useCallback(async (options: { silent?: boolean } = {}) => {
@@ -111,6 +117,7 @@ export default function AdminMovieReviewsPageClient() {
             review.customer.email,
             review.ratingLabel,
             review.content,
+            review.replies.map((reply) => `${reply.userName} ${reply.content}`).join(" "),
           ].join(" "),
         ).includes(normalizedQuery);
 
@@ -123,6 +130,9 @@ export default function AdminMovieReviewsPageClient() {
       current.map((review) =>
         review.id === nextReview.id ? nextReview : review,
       ),
+    );
+    setSelectedReview((current) =>
+      current?.id === nextReview.id ? nextReview : current,
     );
   };
 
@@ -146,6 +156,38 @@ export default function AdminMovieReviewsPageClient() {
       );
     } finally {
       setActionId(null);
+    }
+  };
+
+  const handleReply = async (review: AdminMovieReview, content: string) => {
+    const trimmedContent = content.trim();
+
+    if (!trimmedContent) {
+      return;
+    }
+
+    if (trimmedContent.length > 1000) {
+      showToast("Nội dung trả lời không được vượt quá 1000 ký tự.", "error");
+      return;
+    }
+
+    setReplyingReviewId(review.id);
+
+    try {
+      const result = await sendAdminMovieReviewReply(review.id, trimmedContent);
+
+      replaceReview(result.review);
+      showToast(result.message, "success");
+      await loadReviews({ silent: true });
+    } catch (replyError) {
+      showToast(
+        replyError instanceof Error
+          ? replyError.message
+          : "Không thể gửi trả lời bình luận.",
+        "error",
+      );
+    } finally {
+      setReplyingReviewId(null);
     }
   };
 
@@ -179,7 +221,7 @@ export default function AdminMovieReviewsPageClient() {
         <StatBox
           label="Tổng đánh giá"
           value={stats.totalReviews.toString()}
-          helper="Tất cả review trong database"
+          helper={`${stats.totalReplies} phản hồi trong database`}
           icon={<MessageSquare size={21} />}
         />
         <StatBox
@@ -312,6 +354,11 @@ export default function AdminMovieReviewsPageClient() {
                         <p className="max-w-[420px] text-sm font-medium leading-6 text-slate-700">
                           {review.content || "Khách hàng chỉ chấm điểm, chưa nhập bình luận."}
                         </p>
+                        <p className="mt-2 text-xs font-bold text-slate-400">
+                          {review.replyCount > 0
+                            ? `${review.replyCount} phản hồi`
+                            : "Chưa có phản hồi"}
+                        </p>
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={review.status} label={review.statusLabel} />
@@ -323,7 +370,16 @@ export default function AdminMovieReviewsPageClient() {
                         </span>
                       </TableCell>
                       <td className="px-4 py-4">
-                        <div className="flex items-center justify-end">
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <PermissionButton
+                            type="button"
+                            permissionRule={{ permission: "review.reply" }}
+                            onClick={() => setSelectedReview(review)}
+                            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-blue-500 px-3 text-xs font-black text-blue-600 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                          >
+                            <MessageSquare size={14} />
+                            Trả lời
+                          </PermissionButton>
                           <PermissionButton
                             type="button"
                             permissionRule={{ permission: "review.manage" }}
@@ -354,6 +410,15 @@ export default function AdminMovieReviewsPageClient() {
           </table>
         </div>
       </section>
+
+      {selectedReview ? (
+        <ReviewReplyModal
+          review={selectedReview}
+          isSending={replyingReviewId === selectedReview.id}
+          onClose={() => setSelectedReview(null)}
+          onReply={handleReply}
+        />
+      ) : null}
     </div>
   );
 }
@@ -449,6 +514,137 @@ function StatusBadge({
     <span className={`inline-flex rounded-full border px-3 py-1.5 text-sm font-black ${className}`}>
       {label}
     </span>
+  );
+}
+
+function ReviewReplyModal({
+  review,
+  isSending,
+  onClose,
+  onReply,
+}: {
+  review: AdminMovieReview;
+  isSending: boolean;
+  onClose: () => void;
+  onReply: (review: AdminMovieReview, content: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const canSend = draft.trim().length > 0 && !isSending;
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!canSend) {
+      return;
+    }
+
+    void onReply(review, draft).then(() => setDraft(""));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6">
+      <div className="flex max-h-[calc(100vh-48px)] w-full max-w-3xl flex-col overflow-hidden rounded-md bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="truncate text-xl font-black text-slate-950">
+              {review.movieTitle}
+            </h3>
+            <p className="mt-1 text-sm font-bold text-slate-500">
+              {review.customerName} · {review.ratingLabel} · {review.statusLabel}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Đóng hội thoại"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+          >
+            <XCircle size={18} />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-5 py-5">
+          <div className="grid gap-4">
+            <div className="max-w-[86%] rounded-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-black text-slate-950">
+                  {review.customerName}
+                </p>
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-black text-amber-700">
+                  <Star size={12} className="fill-amber-300 text-amber-400" />
+                  {review.ratingLabel}
+                </span>
+              </div>
+              <p className="mt-2 text-sm font-medium leading-6 text-slate-700">
+                {review.content || "Khách hàng chỉ chấm điểm, chưa nhập bình luận."}
+              </p>
+              <p className="mt-2 text-xs font-semibold text-slate-400">
+                {formatDateTime(review.createdAt)}
+              </p>
+            </div>
+
+            {review.replies.length > 0 ? (
+              review.replies.map((reply) => (
+                <div
+                  key={reply.id}
+                  className={`max-w-[86%] rounded-md px-4 py-3 shadow-sm ${
+                    reply.isAdminReply
+                      ? "ml-auto bg-blue-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-800"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-black">{reply.userName}</p>
+                    {reply.isAdminReply ? (
+                      <span className="rounded-md bg-white/15 px-2 py-0.5 text-[10px] font-black uppercase text-white">
+                        Quản trị
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-sm font-medium leading-6">
+                    {reply.content}
+                  </p>
+                  <p className={`mt-2 text-xs font-semibold ${reply.isAdminReply ? "text-blue-100" : "text-slate-400"}`}>
+                    {formatDateTime(reply.createdAt)}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <p className="rounded-md border border-dashed border-slate-300 bg-white px-4 py-5 text-center text-sm font-bold text-slate-500">
+                Chưa có phản hồi cho bình luận này.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          className="flex flex-col gap-3 border-t border-slate-200 bg-white px-5 py-4"
+        >
+          <textarea
+            value={draft}
+            maxLength={1000}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Nhập trả lời..."
+            className="min-h-24 w-full resize-y rounded-md border border-slate-300 px-3 py-3 text-sm font-semibold leading-6 text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-blue-500"
+          />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs font-semibold text-slate-400">
+              {draft.length}/1000
+            </p>
+            <PermissionButton
+              type="submit"
+              permissionRule={{ permission: "review.reply" }}
+              disabled={!canSend}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 text-sm font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+            >
+              {isSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              Gửi trả lời
+            </PermissionButton>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 

@@ -12,6 +12,18 @@ export type HomeReview = {
   comment: string | null;
   createdAt: string;
   userName: string;
+  replies: HomeReviewReply[];
+};
+
+export type HomeReviewReply = {
+  id: number;
+  reviewId: number;
+  userId: number;
+  userName: string;
+  content: string;
+  isAdminReply: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type HomeMovieImage = {

@@ -146,6 +146,10 @@ export type BookingHistoryItem = {
     status: TicketStatusCode;
     statusLabel: string;
     usedAt: string | null;
+    seat: {
+      id: number;
+      seatCode: string;
+    };
   }[];
   refund: {
     canRequest: boolean;
