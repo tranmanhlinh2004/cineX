@@ -116,9 +116,9 @@ function readFileAsDataUrl(file: File) {
         return;
       }
 
-      reject(new Error("Khong the doc file anh."));
+      reject(new Error("Không thể đọc file ảnh."));
     };
-    reader.onerror = () => reject(new Error("Khong the doc file anh."));
+    reader.onerror = () => reject(new Error("Không thể đọc file ảnh."));
     reader.readAsDataURL(file);
   });
   
@@ -194,11 +194,11 @@ export async function uploadAdminMovieImage(
   file: File,
 ) {
   if (!file.type.startsWith("image/")) {
-    throw new Error("Vui long chon dung file anh.");
+    throw new Error("Vui lòng chọn đúng file ảnh.");
   }
 
   if (file.size > 10 * 1024 * 1024) {
-    throw new Error("Dung luong anh toi da 10 MB.");
+    throw new Error("Dung lượng ảnh tối đa 10 MB.");
   }
 
   const dataUrl = await readFileAsDataUrl(file);

@@ -27,7 +27,7 @@ function splitDescription(description: string) {
   const normalized = description.trim();
 
   if (!normalized) {
-    return ["Noi dung phim dang duoc cap nhat."];
+    return ["Nội dung phim đang được cập nhật."];
   }
 
   return normalized
@@ -42,16 +42,16 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
       <main className="min-h-screen bg-[#0d0f12] px-4 py-14 text-white sm:px-6 lg:px-8">
         <section className="mx-auto max-w-[900px] rounded-lg border border-amber-300/30 bg-amber-300/10 p-6 text-center">
           <Film className="mx-auto text-amber-200" size={34} />
-          <h1 className="mt-4 text-2xl font-black">Khong tai duoc chi tiet phim</h1>
+          <h1 className="mt-4 text-2xl font-black">Không tải được chi tiết phim</h1>
           <p className="mt-2 text-sm font-semibold text-amber-100/80">
-            {error ?? "Du lieu phim khong kha dung."}
+            {error ?? "Dữ liệu phim không khả dụng."}
           </p>
           <Link
             href="/movies/now-showing"
             className="mt-6 inline-flex items-center justify-center gap-2 rounded-md bg-white px-5 py-2.5 text-sm font-black text-black transition hover:bg-gray-200"
           >
             <ArrowLeft size={17} />
-            Quay lai danh sach phim
+            Quay lại danh sách phim
           </Link>
         </section>
       </main>
@@ -88,7 +88,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
           <div className="flex items-center gap-3">
             <Film className="text-red-300" size={24} />
             <h1 className="text-2xl font-black text-white sm:text-3xl">
-              Noi dung phim
+              Nội dung phim
             </h1>
           </div>
 
@@ -97,7 +97,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
             className="inline-flex w-fit items-center gap-2 rounded-md border border-white/10 px-4 py-2 text-sm font-bold text-white/75 transition hover:border-white/35 hover:text-white"
           >
             <ArrowLeft size={17} />
-            Quay lai
+            Quay lại
           </Link>
         </div>
 
@@ -168,7 +168,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
                   }`}
                 >
                   <Ticket size={18} />
-                  {movie.statusCode === "COMING_SOON" ? "Nhac toi" : "Dat ve"}
+                  {movie.statusCode === "COMING_SOON" ? "Nhắc tôi" : "Đặt vé"}
                 </Link>
 
                 
@@ -191,8 +191,8 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#151719] px-5 text-center">
                 <Play className="text-red-300" size={42} />
                 <p className="max-w-md text-sm font-semibold text-white/60">
-                  Trailer chua co dang nhung truc tiep. Ban co the mo trailer o
-                  tab moi.
+                  Trailer chưa có dạng nhúng trực tiếp. Bạn có thể mở trailer ở
+                  tab mới.
                 </p>
                 {movie.trailerUrl ? (
                   <a
@@ -201,7 +201,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
                     rel="noreferrer"
                     className="rounded-md bg-white px-5 py-2.5 text-sm font-black text-black transition hover:bg-gray-200"
                   >
-                    Mo trailer
+                    Mở trailer
                   </a>
                 ) : null}
               </div>
@@ -246,7 +246,7 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
                 </div>
               ) : (
                 <p className="mt-4 rounded-md border border-white/10 bg-black/25 px-3 py-3 text-sm font-semibold text-white/45">
-                  Chua co suat chieu dang ban.
+                  Chưa có suất chiếu đang bán.
                 </p>
               )}
             </div>
@@ -254,12 +254,12 @@ export default function MovieDetailPage({ movie, error }: MovieDetailPageProps) 
             <div className="rounded-lg border border-white/10 bg-[#151719] p-5">
               <h2 className="flex items-center gap-2 text-lg font-black">
                 <Users className="text-amber-200" size={20} />
-                Thong tin nhanh
+                Thông tin nhanh
               </h2>
               <div className="mt-4 grid gap-3 text-sm">
-                <QuickFact icon={<CalendarDays size={16} />} label={movie.releaseDate ?? "Dang cap nhat"} />
+                <QuickFact icon={<CalendarDays size={16} />} label={movie.releaseDate ?? "Đang cập nhật"} />
                 <QuickFact icon={<Clock3 size={16} />} label={movie.duration} />
-                <QuickFact icon={<Globe2 size={16} />} label={movie.country ?? "Dang cap nhat"} />
+                <QuickFact icon={<Globe2 size={16} />} label={movie.country ?? "Đang cập nhật"} />
               </div>
             </div>
           </aside>
@@ -290,7 +290,7 @@ function MovieFact({
     <div className="grid gap-1">
       <dt className="text-xs font-black uppercase text-white/38">{label}</dt>
       <dd className="min-w-0 text-sm font-semibold text-white/76">
-        {value || "Dang cap nhat"}
+        {value || "Đang cập nhật"}
       </dd>
     </div>
   );

@@ -54,6 +54,8 @@ model User {
   isActive               Boolean         @default(true)
   auditLogs              AuditLog[]
   bookings               Booking[]
+  contactMessages        ContactMessage[]
+  contactMessageReplies  ContactMessageReply[]
   notifications          Notification[]
   refundRequests         RefundRequest[] @relation("RefundRequestUser")
   reviewedRefundRequests RefundRequest[] @relation("RefundRequestReviewer")
@@ -321,7 +323,7 @@ model Ticket {
   ticketCode String       @unique
   qrCode     String?
   price      Decimal      @db.Decimal(12, 2)
-  status     TicketStatus @default(ACTIVE)
+  status     TicketStatus @default(VALID)
   usedAt     DateTime?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
@@ -425,6 +427,44 @@ model Review {
 
   @@unique([userId, movieId])
   @@map("reviews")
+}
+
+model ContactMessage {
+  id           Int                  @id @default(autoincrement())
+  code         String               @unique
+  userId       Int?
+  customerName String
+  email        String
+  phone        String?
+  subject      String
+  content      String
+  channel      String               @default("Website")
+  status       ContactMessageStatus @default(PENDING)
+  repliedAt    DateTime?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  replies      ContactMessageReply[]
+  user         User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([email])
+  @@index([status])
+  @@map("contact_messages")
+}
+
+model ContactMessageReply {
+  id               Int            @id @default(autoincrement())
+  contactMessageId Int
+  adminUserId      Int?
+  content          String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  adminUser        User?          @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
+  contactMessage   ContactMessage @relation(fields: [contactMessageId], references: [id], onDelete: Cascade)
+
+  @@index([contactMessageId, createdAt])
+  @@index([adminUserId])
+  @@map("contact_message_replies")
 }
 
 model Banner {
@@ -535,15 +575,21 @@ enum PaymentStatus {
 }
 
 enum TicketStatus {
-  ACTIVE
-  USED
-  CANCELLED
+  VALID
+  INVALID
 }
 
 enum RefundStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum ContactMessageStatus {
+  PENDING
+  IN_PROGRESS
+  REPLIED
+  NEED_FOLLOW_UP
 }
 
 enum NotificationType {

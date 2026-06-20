@@ -8,6 +8,7 @@ import {
   ShowtimeStatus,
   type MovieStatus,
   type Promotion,
+  type TicketStatus,
 } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { existsSync } from "node:fs";
@@ -29,7 +30,15 @@ const prisma = new PrismaClient({
 
 const port = Number(process.env.PORT ?? 4000);
 const corsOrigin = process.env.CORS_ORIGIN ?? "*";
-const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF", "ACCOUNTANT"]);
+const adminRoles = new Set([
+  "ADMIN",
+  "MANAGER",
+  "STAFF",
+  "CASHIER",
+  "MOVIE_MANAGER",
+  "ACCOUNTANT",
+  "CUSTOMER_SUPPORT",
+]);
 const homeSectionLimit = 9;
 const catalogPageSize = 9;
 const maxCatalogPageSize = 24;
@@ -78,17 +87,31 @@ const RefundStatus = {
 
 type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 
-type UserWithRole = {
-  id: number;
-  roleId: number;
-  fullName: string;
-  email: string;
-  phone: string | null;
-  avatar: string | null;
+const ContactMessageStatus = {
+  PENDING: "PENDING",
+  IN_PROGRESS: "IN_PROGRESS",
+  REPLIED: "REPLIED",
+  NEED_FOLLOW_UP: "NEED_FOLLOW_UP",
+} as const;
+
+type ContactMessageStatus =
+  (typeof ContactMessageStatus)[keyof typeof ContactMessageStatus];
+
+const authUserInclude = {
   role: {
-    name: string;
-  };
-};
+    include: {
+      rolePermissions: {
+        include: {
+          permission: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.UserInclude;
+
+type UserWithRole = Prisma.UserGetPayload<{
+  include: typeof authUserInclude;
+}>;
 
 const vietnamTimeZone = "Asia/Ho_Chi_Minh";
 const dateKeyFormatter = new Intl.DateTimeFormat("en-US", {
@@ -191,6 +214,14 @@ function positiveIntegerParam(
 }
 
 function serializeUser(user: UserWithRole) {
+  const permissions = [
+    ...new Set(
+      user.role.rolePermissions.map(
+        (rolePermission) => rolePermission.permission.name,
+      ),
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+
   return {
     id: user.id,
     roleId: user.roleId,
@@ -199,6 +230,7 @@ function serializeUser(user: UserWithRole) {
     phone: user.phone,
     avatarUrl: user.avatar,
     role: user.role.name,
+    permissions,
   };
 }
 
@@ -330,6 +362,19 @@ const refundStatusLabels = {
 
 function getRefundStatusLabel(status: RefundStatus) {
   return refundStatusLabels[status] ?? status;
+}
+
+const ticketStatusLabels = {
+  VALID: "Vé hợp lệ",
+  INVALID: "Vé không hợp lệ",
+} satisfies Record<TicketStatus, string>;
+
+function getTicketStatusLabel(status: TicketStatus | string) {
+  return (ticketStatusLabels as Record<string, string>)[status] ?? status;
+}
+
+function isTicketUsed(ticket: { usedAt: Date | null }) {
+  return ticket.usedAt !== null;
 }
 
 const adminPaymentMethodLabels = {
@@ -1109,6 +1154,117 @@ async function loadMovieDetailData(movieId: number) {
   };
 }
 
+type PublicGenreRecord = {
+  id: number;
+  name: string;
+  description: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  _count: {
+    movieGenres: number;
+  };
+};
+
+function serializePublicGenre(genre: PublicGenreRecord) {
+  return {
+    id: genre.id,
+    name: genre.name,
+    slug: slugifyMovieTitle(genre.name),
+    description: genre.description ?? "",
+    movieCount: genre._count.movieGenres,
+    createdAt: genre.createdAt.toISOString(),
+    updatedAt: genre.updatedAt.toISOString(),
+  };
+}
+
+async function fetchPublicGenres() {
+  return prisma.genre.findMany({
+    orderBy: {
+      name: "asc",
+    },
+    include: {
+      _count: {
+        select: {
+          movieGenres: true,
+        },
+      },
+    },
+  });
+}
+
+async function handleGetPublicGenres(_request: IncomingMessage, response: ServerResponse) {
+  const genres = (await fetchPublicGenres()).map(serializePublicGenre);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    genres,
+  });
+}
+
+async function loadGenreMovieCatalogData(genreSlug: string) {
+  const now = new Date();
+  const genres = (await fetchPublicGenres()).map(serializePublicGenre);
+  const selectedGenre =
+    genreSlug.trim() === ""
+      ? null
+      : genres.find((genre) => genre.slug === genreSlug.trim()) ?? null;
+
+  if (genreSlug.trim() && !selectedGenre) {
+    return {
+      generatedAt: now.toISOString(),
+      genres,
+      selectedGenre: null,
+      movies: [],
+      notFound: true,
+    };
+  }
+
+  const where: Prisma.MovieWhereInput = {
+    status: {
+      in: recommendedMovieStatuses,
+    },
+  };
+
+  if (selectedGenre) {
+    where.movieGenres = {
+      some: {
+        genreId: selectedGenre.id,
+      },
+    };
+  }
+
+  const movies = filterHomeMovieShowtimesForDisplay(
+    (await fetchHomeMovieRecords(now, { where })).map(serializeHomeMovie),
+  ).sort(compareLatestMovieRecords);
+
+  return {
+    generatedAt: now.toISOString(),
+    genres,
+    selectedGenre,
+    movies,
+    notFound: false,
+  };
+}
+
+async function handleGetPublicGenreMovies(
+  request: IncomingMessage,
+  response: ServerResponse,
+  searchParams: URLSearchParams,
+) {
+  const genreSlug = searchParams.get("genre")?.trim() ?? "";
+  const data = await loadGenreMovieCatalogData(genreSlug);
+
+  if (data.notFound) {
+    sendJson(response, 404, {
+      message: "Không tìm thấy thể loại phim.",
+      ...data,
+    });
+    return;
+  }
+
+  sendJson(response, 200, data);
+}
+
 type PreferredGenreScore = {
   id: number;
   name: string;
@@ -1319,7 +1475,7 @@ async function handleCreateMovieReview(
   const user = await getAuthenticatedUser(request);
 
   if (!user) {
-    sendJson(response, 401, { message: "Vui long dang nhap de binh luan va danh gia phim." });
+    sendJson(response, 401, { message: "Vui lòng đăng nhập để bình luận và đánh giá phim." });
     return;
   }
 
@@ -1328,12 +1484,12 @@ async function handleCreateMovieReview(
   const comment = stringField(body, "comment");
 
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-    sendJson(response, 400, { message: "Danh gia phai nam trong khoang 1 den 5 sao." });
+    sendJson(response, 400, { message: "Đánh giá phải nằm trong khoảng 1 đến 5 sao." });
     return;
   }
 
   if (comment.length > 1000) {
-    sendJson(response, 400, { message: "Binh luan khong duoc vuot qua 1000 ky tu." });
+    sendJson(response, 400, { message: "Bình luận không được vượt quá 1000 ký tự." });
     return;
   }
 
@@ -1347,7 +1503,7 @@ async function handleCreateMovieReview(
   });
 
   if (!movie) {
-    sendJson(response, 404, { message: "Khong tim thay phim." });
+    sendJson(response, 404, { message: "Không tìm thấy phim." });
     return;
   }
 
@@ -1375,12 +1531,12 @@ async function handleCreateMovieReview(
   const movieDetailData = await loadMovieDetailData(movieId);
 
   if (!movieDetailData) {
-    sendJson(response, 404, { message: "Khong tim thay phim." });
+    sendJson(response, 404, { message: "Không tìm thấy phim." });
     return;
   }
 
   sendJson(response, 200, {
-    message: "Da luu binh luan va danh gia phim.",
+    message: "Đã lưu bình luận và đánh giá phim.",
     ...movieDetailData,
   });
 }
@@ -1419,9 +1575,7 @@ async function getAuthenticatedUser(request: IncomingMessage) {
     },
     include: {
       user: {
-        include: {
-          role: true,
-        },
+        include: authUserInclude,
       },
     },
   });
@@ -1437,23 +1591,87 @@ function isAdminUser(user: { role: { name: string } }) {
   return adminRoles.has(user.role.name.toUpperCase());
 }
 
+function getUserPermissionSet(user: UserWithRole) {
+  return new Set(
+    user.role.rolePermissions.map(
+      (rolePermission) => rolePermission.permission.name,
+    ),
+  );
+}
+
+function hasUserPermission(user: UserWithRole, permissionName: string) {
+  return getUserPermissionSet(user).has(permissionName);
+}
+
+async function getRequiredAdminUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: {
+    permission?: string;
+    anyPermission?: string[];
+    loginMessage: string;
+    deniedMessage?: string;
+  },
+) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
+    sendJson(response, 401, { message: options.loginMessage });
+    return null;
+  }
+
+  if (!isAdminUser(user) || !hasUserPermission(user, "admin.access")) {
+    sendJson(response, 403, {
+      message: "Tài khoản không được cấp quyền truy cập trang quản trị.",
+    });
+    return null;
+  }
+
+  const hasRequiredPermission =
+    !options.permission || hasUserPermission(user, options.permission);
+  const hasAnyPermission =
+    !options.anyPermission ||
+    options.anyPermission.some((permissionName) =>
+      hasUserPermission(user, permissionName),
+    );
+
+  if (!hasRequiredPermission || !hasAnyPermission) {
+    sendJson(response, 403, {
+      message:
+        options.deniedMessage ??
+        "Tài khoản không được cấp quyền thao tác chức năng này.",
+    });
+    return null;
+  }
+
+  return user;
+}
+
 const adminAccountRoleLabels = {
   ADMIN: "Quản trị viên",
-  MANAGER: "Quản lý rạp",
-  STAFF: "Nhân viên rạp",
-  ACCOUNTANT: "Kế toán",
+  MANAGER: "Quản lý",
+  CASHIER: "Nhân viên thu ngân",
+  MOVIE_MANAGER: "Nhân viên quản lý phim",
+  ACCOUNTANT: "Nhân viên kế toán",
+  CUSTOMER_SUPPORT: "Nhân viên chăm sóc khách hàng",
   CUSTOMER: "Khách hàng",
 } as const;
 
 const adminAccountRoleDescriptions = {
-  ADMIN: "Quản trị viên hệ thống",
-  MANAGER: "Quản lý rạp phim",
-  STAFF: "Nhân viên rạp phim",
-  ACCOUNTANT: "Kế toán",
-  CUSTOMER: "Khách hàng",
+  ADMIN: "Quản trị viên - truy cập đầy đủ chức năng website quản trị",
+  MANAGER: "Quản lý - quản lý vận hành tổng quan hệ thống rạp phim",
+  CASHIER: "Nhân viên thu ngân - tạo đơn, xem đơn, hủy đơn, hoàn tiền và xuất hóa đơn",
+  MOVIE_MANAGER: "Nhân viên quản lý phim - quản lý phim, thể loại, lịch chiếu và suất chiếu",
+  ACCOUNTANT: "Nhân viên kế toán - xem giao dịch, thống kê và xuất báo cáo doanh thu",
+  CUSTOMER_SUPPORT: "Nhân viên chăm sóc khách hàng - phản hồi đánh giá và tin nhắn liên hệ",
+  CUSTOMER: "Khách hàng - truy cập đầy đủ chức năng website người dùng",
 } as const;
 
 type AdminAccountRoleName = keyof typeof adminAccountRoleLabels;
+
+const legacyAdminAccountRoleNames: Record<string, AdminAccountRoleName> = {
+  STAFF: "CASHIER",
+};
 
 function normalizeAdminAccountInput(value: string) {
   return value
@@ -1471,14 +1689,20 @@ const adminAccountRoleNameByLabel = new Map<string, AdminAccountRoleName>(
   ]),
 );
 
-function getAdminAccountRoleName(roleInput: string) {
+function getCanonicalAdminAccountRoleName(roleInput: string) {
   const normalizedRoleName = roleInput.trim().toUpperCase();
 
   if (normalizedRoleName in adminAccountRoleLabels) {
     return normalizedRoleName as AdminAccountRoleName;
   }
 
-  return adminAccountRoleNameByLabel.get(normalizeAdminAccountInput(roleInput)) ?? null;
+  return legacyAdminAccountRoleNames[normalizedRoleName] ?? null;
+}
+
+function getAdminAccountRoleName(roleInput: string) {
+  const canonicalRoleName = getCanonicalAdminAccountRoleName(roleInput);
+
+  return canonicalRoleName ?? adminAccountRoleNameByLabel.get(normalizeAdminAccountInput(roleInput)) ?? null;
 }
 
 function getAdminAccountRoleNameFromBody(body: JsonBody) {
@@ -1608,9 +1832,9 @@ async function fetchAdminAccountUserById(userId: number) {
 type AdminAccountUserRecord = Awaited<ReturnType<typeof fetchAdminAccountUsers>>[number];
 
 function getRoleDisplayName(roleName: string) {
-  const normalizedRoleName = roleName.toUpperCase() as AdminAccountRoleName;
+  const normalizedRoleName = getCanonicalAdminAccountRoleName(roleName);
 
-  return adminAccountRoleLabels[normalizedRoleName] ?? roleName;
+  return normalizedRoleName ? adminAccountRoleLabels[normalizedRoleName] : roleName;
 }
 
 function serializeAdminAccount(user: AdminAccountUserRecord) {
@@ -1636,15 +1860,13 @@ function serializeAdminAccount(user: AdminAccountUserRecord) {
 }
 
 async function handleGetAdminAccounts(request: IncomingMessage, response: ServerResponse) {
-  const user = await getAuthenticatedUser(request);
+  const user = await getRequiredAdminUser(request, response, {
+    permission: "user.view",
+    loginMessage: "Vui lòng đăng nhập để xem danh sách tài khoản.",
+    deniedMessage: "Tài khoản không được cấp quyền xem danh sách tài khoản.",
+  });
 
   if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập để xem danh sách tài khoản." });
-    return;
-  }
-
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền quản lý tài khoản." });
     return;
   }
 
@@ -1668,20 +1890,16 @@ async function handleGetAdminAccounts(request: IncomingMessage, response: Server
   });
 }
 
-async function getAdminAccountRequestUser(request: IncomingMessage, response: ServerResponse) {
-  const user = await getAuthenticatedUser(request);
-
-  if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý tài khoản." });
-    return null;
-  }
-
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền quản lý tài khoản." });
-    return null;
-  }
-
-  return user;
+async function getAdminAccountRequestUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+  permission = "user.manage",
+) {
+  return getRequiredAdminUser(request, response, {
+    permission,
+    loginMessage: "Vui lòng đăng nhập để quản lý tài khoản.",
+    deniedMessage: "Tài khoản không được cấp quyền quản lý tài khoản.",
+  });
 }
 
 async function hasAnotherActiveAdminUser(userId: number) {
@@ -2137,11 +2355,11 @@ async function syncBookingSeatArtifactsFromDatabase(scope: BookingSeatSyncScope 
             showtimeId: detail.showtimeId,
             seatId: detail.seatId,
             status: {
-              not: "CANCELLED",
+              not: "INVALID",
             },
           },
           data: {
-            status: "CANCELLED",
+            status: "INVALID",
           },
         });
       }
@@ -2301,6 +2519,10 @@ async function handleUpdateAdminAccount(
   }
 
   const role = await ensureAdminAccountRole(roleName);
+  const shouldRevokeAccountSessions =
+    existingAccount.roleId !== role.id ||
+    existingAccount.isActive !== parsedIsActive.value ||
+    Boolean(password);
   const updateData: Prisma.UserUpdateInput = {
     fullName,
     email,
@@ -2324,6 +2546,18 @@ async function handleUpdateAdminAccount(
     data: updateData,
     include: adminAccountUserInclude,
   });
+
+  if (shouldRevokeAccountSessions) {
+    await prisma.refreshToken.updateMany({
+      where: {
+        userId: existingAccount.id,
+        revoked: false,
+      },
+      data: {
+        revoked: true,
+      },
+    });
+  }
 
   sendJson(response, 200, {
     message: "Cập nhật tài khoản thành công.",
@@ -2676,7 +2910,11 @@ function getMovieImageUploadKind(body: JsonBody) {
 }
 
 async function handleUploadAdminMovieImage(request: IncomingMessage, response: ServerResponse) {
-  const requestUser = await getAdminMovieRequestUser(request, response);
+  const requestUser = await getRequiredAdminUser(request, response, {
+    anyPermission: ["movie.create", "movie.update"],
+    loginMessage: "Vui lòng đăng nhập để quản lý phim.",
+    deniedMessage: "Tài khoản không được cấp quyền upload ảnh phim.",
+  });
 
   if (!requestUser) {
     return;
@@ -2688,12 +2926,12 @@ async function handleUploadAdminMovieImage(request: IncomingMessage, response: S
   const match = dataUrl.match(movieImageDataUrlPattern);
 
   if (!kind) {
-    sendJson(response, 400, { message: "Loai anh phim khong hop le." });
+    sendJson(response, 400, { message: "Loại ảnh phim không hợp lệ." });
     return;
   }
 
   if (!match) {
-    sendJson(response, 400, { message: "Vui long chon anh JPEG, PNG hoac WEBP." });
+    sendJson(response, 400, { message: "Vui lòng chọn ảnh JPEG, PNG hoặc WEBP." });
     return;
   }
 
@@ -2701,19 +2939,19 @@ async function handleUploadAdminMovieImage(request: IncomingMessage, response: S
   const byteLength = Buffer.byteLength(base64Data, "base64");
 
   if (byteLength < 1) {
-    sendJson(response, 400, { message: "File anh khong co du lieu." });
+    sendJson(response, 400, { message: "File ảnh không có dữ liệu." });
     return;
   }
 
   if (byteLength > movieImageMaxBytes) {
-    sendJson(response, 400, { message: "Dung luong anh toi da 10 MB." });
+    sendJson(response, 400, { message: "Dung lượng ảnh tối đa 10 MB." });
     return;
   }
 
   const extension = movieImageExtensions[contentType];
 
   if (!extension) {
-    sendJson(response, 400, { message: "Dinh dang anh khong hop le." });
+    sendJson(response, 400, { message: "Định dạng ảnh không hợp lệ." });
     return;
   }
 
@@ -2726,7 +2964,7 @@ async function handleUploadAdminMovieImage(request: IncomingMessage, response: S
   await writeFile(filePath, Buffer.from(base64Data, "base64"));
 
   sendJson(response, 201, {
-    message: "Upload anh phim thanh cong.",
+    message: "Upload ảnh phim thành công.",
     url: publicUrl,
     fileName,
     size: byteLength,
@@ -2842,20 +3080,16 @@ function serializeAdminMovie(movie: AdminMovieRecord) {
   };
 }
 
-async function getAdminMovieRequestUser(request: IncomingMessage, response: ServerResponse) {
-  const user = await getAuthenticatedUser(request);
-
-  if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý phim." });
-    return null;
-  }
-
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền quản lý phim." });
-    return null;
-  }
-
-  return user;
+async function getAdminMovieRequestUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+  permission = "movie.view",
+) {
+  return getRequiredAdminUser(request, response, {
+    permission,
+    loginMessage: "Vui lòng đăng nhập để quản lý phim.",
+    deniedMessage: "Tài khoản không được cấp quyền quản lý phim.",
+  });
 }
 
 async function handleGetAdminMovies(request: IncomingMessage, response: ServerResponse) {
@@ -2905,7 +3139,7 @@ async function handleGetAdminMovie(
 }
 
 async function handleCreateAdminMovie(request: IncomingMessage, response: ServerResponse) {
-  const requestUser = await getAdminMovieRequestUser(request, response);
+  const requestUser = await getAdminMovieRequestUser(request, response, "movie.create");
 
   if (!requestUser) {
     return;
@@ -3001,7 +3235,7 @@ async function handleUpdateAdminMovie(
   response: ServerResponse,
   movieId: number,
 ) {
-  const requestUser = await getAdminMovieRequestUser(request, response);
+  const requestUser = await getAdminMovieRequestUser(request, response, "movie.update");
 
   if (!requestUser) {
     return;
@@ -3122,7 +3356,7 @@ async function handleDeleteAdminMovie(
   response: ServerResponse,
   movieId: number,
 ) {
-  const requestUser = await getAdminMovieRequestUser(request, response);
+  const requestUser = await getAdminMovieRequestUser(request, response, "movie.delete");
 
   if (!requestUser) {
     return;
@@ -3207,7 +3441,7 @@ function serializeAdminGenre(genre: AdminGenreRecord) {
 }
 
 async function handleGetAdminGenres(request: IncomingMessage, response: ServerResponse) {
-  const requestUser = await getAdminMovieRequestUser(request, response);
+  const requestUser = await getAdminMovieRequestUser(request, response, "genre.view");
 
   if (!requestUser) {
     return;
@@ -3224,6 +3458,151 @@ async function handleGetAdminGenres(request: IncomingMessage, response: ServerRe
       unusedGenres: genres.filter((genre) => genre.movieCount === 0).length,
       movieGenreLinks: genres.reduce((total, genre) => total + genre.movieCount, 0),
     },
+  });
+}
+
+async function getAdminReviewRequestUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  return getRequiredAdminUser(request, response, {
+    permission: "review.manage",
+    loginMessage: "Vui lòng đăng nhập quản trị để xem đánh giá.",
+    deniedMessage: "Tài khoản không được cấp quyền quản lý đánh giá.",
+  });
+}
+
+const adminMovieReviewInclude = {
+  movie: {
+    select: {
+      id: true,
+      slug: true,
+      title: true,
+      status: true,
+    },
+  },
+  user: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+    },
+  },
+} as const satisfies Prisma.ReviewInclude;
+
+type AdminMovieReviewRecord = Prisma.ReviewGetPayload<{
+  include: typeof adminMovieReviewInclude;
+}>;
+
+function getAdminMovieReviewStatusLabel(isHidden: boolean) {
+  return isHidden ? "Đã ẩn" : "Hiển thị";
+}
+
+function serializeAdminMovieReview(review: AdminMovieReviewRecord) {
+  const status = review.isHidden ? "HIDDEN" : "VISIBLE";
+
+  return {
+    id: review.id,
+    movieId: review.movie.id,
+    movieSlug: review.movie.slug,
+    movieTitle: review.movie.title,
+    customer: {
+      id: review.user.id,
+      fullName: review.user.fullName,
+      email: review.user.email,
+      phone: review.user.phone,
+    },
+    customerName: review.user.fullName,
+    rating: review.rating,
+    ratingLabel: `${review.rating}/5`,
+    content: review.comment ?? "",
+    status,
+    statusLabel: getAdminMovieReviewStatusLabel(review.isHidden),
+    isHidden: review.isHidden,
+    createdAt: review.createdAt.toISOString(),
+    updatedAt: review.updatedAt.toISOString(),
+  };
+}
+
+async function fetchAdminMovieReviews() {
+  return prisma.review.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    include: adminMovieReviewInclude,
+  });
+}
+
+async function handleGetAdminMovieReviews(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const requestUser = await getAdminReviewRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const reviews = (await fetchAdminMovieReviews()).map(serializeAdminMovieReview);
+  const visibleReviews = reviews.filter((review) => !review.isHidden);
+  const hiddenReviews = reviews.filter((review) => review.isHidden);
+  const averageRating =
+    reviews.length > 0
+      ? reviews.reduce((total, review) => total + review.rating, 0) / reviews.length
+      : 0;
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    reviews,
+    stats: {
+      totalReviews: reviews.length,
+      visibleReviews: visibleReviews.length,
+      hiddenReviews: hiddenReviews.length,
+      pendingReviews: 0,
+      averageRating,
+      averageRatingLabel: `${averageRating.toFixed(1)}/5`,
+    },
+  });
+}
+
+async function handleSetAdminMovieReviewVisibility(
+  request: IncomingMessage,
+  response: ServerResponse,
+  reviewId: number,
+  action: "hide" | "show",
+) {
+  const requestUser = await getAdminReviewRequestUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const existingReview = await prisma.review.findUnique({
+    where: {
+      id: reviewId,
+    },
+  });
+
+  if (!existingReview) {
+    sendJson(response, 404, { message: "Không tìm thấy đánh giá." });
+    return;
+  }
+
+  const review = await prisma.review.update({
+    where: {
+      id: reviewId,
+    },
+    data: {
+      isHidden: action === "hide",
+    },
+    include: adminMovieReviewInclude,
+  });
+
+  sendJson(response, 200, {
+    message:
+      action === "hide"
+        ? "Đã ẩn đánh giá khỏi website."
+        : "Đã hiển thị lại đánh giá trên website.",
+    review: serializeAdminMovieReview(review),
   });
 }
 
@@ -3656,20 +4035,16 @@ function formatShowtimeConflictMessage(
   )}. Không thể tạo hai suất chiếu trùng hoặc giao nhau trong cùng phòng.`;
 }
 
-async function getAdminShowtimeRequestUser(request: IncomingMessage, response: ServerResponse) {
-  const user = await getAuthenticatedUser(request);
-
-  if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập để quản lý lịch chiếu." });
-    return null;
-  }
-
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền quản lý lịch chiếu." });
-    return null;
-  }
-
-  return user;
+async function getAdminShowtimeRequestUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+  permission = "showtime.view",
+) {
+  return getRequiredAdminUser(request, response, {
+    permission,
+    loginMessage: "Vui lòng đăng nhập để quản lý lịch chiếu.",
+    deniedMessage: "Tài khoản không được cấp quyền quản lý lịch chiếu.",
+  });
 }
 
 async function handleGetAdminShowtimes(request: IncomingMessage, response: ServerResponse) {
@@ -3850,7 +4225,11 @@ async function buildAdminShowtimeMutationData(
 }
 
 async function handleCreateAdminShowtime(request: IncomingMessage, response: ServerResponse) {
-  const requestUser = await getAdminShowtimeRequestUser(request, response);
+  const requestUser = await getAdminShowtimeRequestUser(
+    request,
+    response,
+    "showtime.session.create",
+  );
 
   if (!requestUser) {
     return;
@@ -3894,7 +4273,7 @@ async function handleUpdateAdminShowtime(
   response: ServerResponse,
   showtimeId: number,
 ) {
-  const requestUser = await getAdminShowtimeRequestUser(request, response);
+  const requestUser = await getAdminShowtimeRequestUser(request, response, "showtime.manage");
 
   if (!requestUser) {
     return;
@@ -3948,7 +4327,7 @@ async function handleDeleteAdminShowtime(
   response: ServerResponse,
   showtimeId: number,
 ) {
-  const requestUser = await getAdminShowtimeRequestUser(request, response);
+  const requestUser = await getAdminShowtimeRequestUser(request, response, "showtime.manage");
 
   if (!requestUser) {
     return;
@@ -4040,9 +4419,7 @@ async function handleLogin(request: IncomingMessage, response: ServerResponse) {
     where: {
       OR: [{ email: normalizedIdentifier }, { phone: identifier }],
     },
-    include: {
-      role: true,
-    },
+    include: authUserInclude,
   });
 
   if (!user || !(await isPasswordMatch(password, user.password))) {
@@ -4111,9 +4488,7 @@ async function handleRegister(request: IncomingMessage, response: ServerResponse
       password: hashedPassword,
       isActive: true,
     },
-    include: {
-      role: true,
-    },
+    include: authUserInclude,
   });
 
   const token = await createRefreshToken(user.id);
@@ -4209,9 +4584,7 @@ async function handleUpdateProfile(request: IncomingMessage, response: ServerRes
       phone: phone || null,
       ...(avatar !== undefined ? { avatar } : {}),
     },
-    include: {
-      role: true,
-    },
+    include: authUserInclude,
   });
 
   sendJson(response, 200, { user: serializeUser(updatedUser) });
@@ -4404,6 +4777,7 @@ async function fetchUserBookingHistory(userId: number) {
           ticketCode: true,
           qrCode: true,
           status: true,
+          usedAt: true,
         },
       },
     },
@@ -4443,7 +4817,7 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
   const seatTypeNames = [
     ...new Set(booking.bookingDetails.map((detail) => detail.seat.seatType.name)),
   ];
-  const hasUsedTicket = booking.tickets.some((ticket) => ticket.status === "USED");
+  const hasUsedTicket = booking.tickets.some(isTicketUsed);
   const canRequestRefund =
     booking.status === BookingStatus.CONFIRMED &&
     payment?.status === "SUCCESS" &&
@@ -4556,6 +4930,8 @@ function serializeBookingHistoryItem(booking: BookingHistoryRecord) {
       ticketCode: ticket.ticketCode,
       qrCode: ticket.qrCode,
       status: ticket.status,
+      statusLabel: getTicketStatusLabel(ticket.status),
+      usedAt: ticket.usedAt?.toISOString() ?? null,
     })),
     refund: {
       canRequest: canRequestRefund,
@@ -4611,7 +4987,7 @@ async function upsertPaidTicket(
 
     if (
       existingTicket.ticketCode === ticketCode &&
-      existingTicket.status === "ACTIVE" &&
+      existingTicket.status === "VALID" &&
       existingTicket.qrCode === qrCode &&
       existingTicket.usedAt === null &&
       Number(existingTicket.price) === params.price
@@ -4627,7 +5003,7 @@ async function upsertPaidTicket(
         bookingId: params.bookingId,
         ticketCode,
         price: params.price,
-        status: "ACTIVE",
+        status: "VALID",
         qrCode,
         usedAt: null,
       },
@@ -4642,7 +5018,7 @@ async function upsertPaidTicket(
       seatId: params.seatId,
       ticketCode,
       price: params.price,
-      status: "ACTIVE",
+      status: "VALID",
       qrCode,
     },
   });
@@ -4737,6 +5113,7 @@ async function handleCreateRefundRequest(
       tickets: {
         select: {
           status: true,
+          usedAt: true,
         },
       },
     },
@@ -4767,7 +5144,7 @@ async function handleCreateRefundRequest(
     return;
   }
 
-  if (booking.tickets.some((ticket) => ticket.status === "USED")) {
+  if (booking.tickets.some(isTicketUsed)) {
     sendJson(response, 409, { message: "Vé đã soát không thể gửi yêu cầu hoàn tiền." });
     return;
   }
@@ -4962,7 +5339,7 @@ async function handlePayBooking(
   } catch (error) {
     if (isSeatUnavailableError(error)) {
       sendJson(response, 409, {
-        message: "Ghe trong don nay khong con kha dung de thanh toan. Vui long lien he nhan vien ho tro.",
+        message: "Ghế trong đơn này không còn khả dụng để thanh toán. Vui lòng liên hệ nhân viên hỗ trợ.",
       });
       return;
     }
@@ -4981,19 +5358,19 @@ async function handlePayBooking(
 }
 
 async function getAdminPaymentTransactionUser(request: IncomingMessage, response: ServerResponse) {
-  const user = await getAuthenticatedUser(request);
+  return getRequiredAdminUser(request, response, {
+    permission: "payment.view",
+    loginMessage: "Vui lòng đăng nhập quản trị để xem giao dịch.",
+    deniedMessage: "Tài khoản không được cấp quyền xem giao dịch thanh toán.",
+  });
+}
 
-  if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập quản trị để xem giao dịch." });
-    return null;
-  }
-
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền xem giao dịch thanh toán." });
-    return null;
-  }
-
-  return user;
+async function getAdminTicketUser(request: IncomingMessage, response: ServerResponse) {
+  return getRequiredAdminUser(request, response, {
+    anyPermission: ["booking.view", "ticket.view", "ticket.scan"],
+    loginMessage: "Vui lòng đăng nhập quản trị để kiểm tra vé.",
+    deniedMessage: "Tài khoản không được cấp quyền kiểm tra vé.",
+  });
 }
 
 async function fetchAdminPaymentTransactions() {
@@ -5077,6 +5454,7 @@ function serializeAdminPaymentTransaction(payment: AdminPaymentTransactionRecord
       id: ticket.id,
       ticketCode: ticket.ticketCode,
       status: ticket.status,
+      statusLabel: getTicketStatusLabel(ticket.status),
     })),
   };
 }
@@ -5125,20 +5503,688 @@ async function handleGetAdminPaymentTransactions(
   });
 }
 
-async function getAdminRefundRequestUser(request: IncomingMessage, response: ServerResponse) {
+const adminTicketInclude = {
+  booking: {
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
+      payments: {
+        orderBy: {
+          createdAt: "desc" as const,
+        },
+        take: 1,
+      },
+    },
+  },
+  seat: {
+    include: {
+      seatType: true,
+    },
+  },
+  showtime: {
+    include: {
+      movie: {
+        select: {
+          id: true,
+          slug: true,
+          title: true,
+        },
+      },
+      room: {
+        include: {
+          cinema: {
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              city: true,
+            },
+          },
+        },
+      },
+    },
+  },
+} as const satisfies Prisma.TicketInclude;
+
+type AdminTicketRecord = Prisma.TicketGetPayload<{
+  include: typeof adminTicketInclude;
+}>;
+
+function containsInsensitive(value: string) {
+  return {
+    contains: value,
+    mode: "insensitive" as const,
+  };
+}
+
+function getAdminTicketSearchWhere(searchParams: URLSearchParams) {
+  const query = (searchParams.get("query") ?? searchParams.get("q") ?? "")
+    .trim()
+    .slice(0, 120);
+
+  if (!query) {
+    return {
+      query,
+      where: undefined,
+    };
+  }
+
+  const textFilter = containsInsensitive(query);
+
+  return {
+    query,
+    where: {
+      OR: [
+        { ticketCode: textFilter },
+        { qrCode: textFilter },
+        {
+          booking: {
+            bookingCode: textFilter,
+          },
+        },
+        {
+          booking: {
+            user: {
+              fullName: textFilter,
+            },
+          },
+        },
+        {
+          booking: {
+            user: {
+              email: textFilter,
+            },
+          },
+        },
+        {
+          booking: {
+            user: {
+              phone: textFilter,
+            },
+          },
+        },
+        {
+          showtime: {
+            movie: {
+              title: textFilter,
+            },
+          },
+        },
+        {
+          seat: {
+            seatCode: textFilter,
+          },
+        },
+      ],
+    } satisfies Prisma.TicketWhereInput,
+  };
+}
+
+async function fetchAdminTickets(searchParams: URLSearchParams) {
+  await expireOverduePendingBookings();
+
+  const { query, where } = getAdminTicketSearchWhere(searchParams);
+  const tickets = await prisma.ticket.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    include: adminTicketInclude,
+  });
+
+  return {
+    query,
+    tickets,
+  };
+}
+
+function serializeAdminTicket(ticket: AdminTicketRecord) {
+  const payment = ticket.booking.payments[0] ?? null;
+  const room = ticket.showtime.room;
+  const amount = Number(ticket.price);
+  const source = payment?.method === "CASH" ? "COUNTER" : "ONLINE";
+
+  return {
+    id: ticket.id,
+    ticketCode: ticket.ticketCode,
+    qrCode: ticket.qrCode,
+    price: amount,
+    priceLabel: formatCurrency(amount),
+    status: ticket.status,
+    statusLabel: getTicketStatusLabel(ticket.status),
+    usedAt: ticket.usedAt?.toISOString() ?? null,
+    createdAt: ticket.createdAt.toISOString(),
+    updatedAt: ticket.updatedAt.toISOString(),
+    source,
+    sourceLabel: source === "ONLINE" ? "Online" : "Quay ve",
+    booking: {
+      id: ticket.booking.id,
+      bookingCode: ticket.booking.bookingCode,
+      status: ticket.booking.status,
+      createdAt: ticket.booking.createdAt.toISOString(),
+    },
+    customer: {
+      id: ticket.booking.user.id,
+      fullName: ticket.booking.user.fullName,
+      email: ticket.booking.user.email,
+      phone: ticket.booking.user.phone,
+    },
+    movie: {
+      id: ticket.showtime.movie.id,
+      slug: ticket.showtime.movie.slug,
+      title: ticket.showtime.movie.title,
+    },
+    showtime: {
+      id: ticket.showtime.id,
+      startTime: ticket.showtime.startTime.toISOString(),
+      endTime: ticket.showtime.endTime.toISOString(),
+      date: fullDateFormatter.format(ticket.showtime.startTime),
+      time: timeFormatter.format(ticket.showtime.startTime),
+    },
+    room: {
+      id: room.id,
+      name: room.name,
+      cinemaName: room.cinema.name,
+      cinemaAddress: room.cinema.address,
+      cinemaCity: room.cinema.city,
+    },
+    seat: {
+      id: ticket.seat.id,
+      seatCode: ticket.seat.seatCode,
+      typeName: ticket.seat.seatType.name,
+    },
+    payment: payment
+      ? {
+          id: payment.id,
+          method: payment.method,
+          methodLabel: getAdminPaymentMethodLabel(payment.method),
+          status: payment.status,
+          statusLabel: getAdminPaymentStatusLabel(payment.status),
+          transactionCode:
+            payment.transactionCode ?? `PAY-${payment.id.toString().padStart(6, "0")}`,
+          paidAt: payment.paidAt?.toISOString() ?? null,
+        }
+      : null,
+  };
+}
+
+async function handleGetAdminTickets(
+  request: IncomingMessage,
+  response: ServerResponse,
+  searchParams: URLSearchParams,
+) {
+  const requestUser = await getAdminTicketUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const { query, tickets } = await fetchAdminTickets(searchParams);
+  const serializedTickets = tickets.map(serializeAdminTicket);
+  const validTickets = serializedTickets.filter((ticket) => ticket.status === "VALID");
+  const invalidTickets = serializedTickets.filter((ticket) => ticket.status === "INVALID");
+  const usedTickets = serializedTickets.filter((ticket) => ticket.usedAt !== null);
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    query,
+    tickets: serializedTickets,
+    stats: {
+      totalTickets: serializedTickets.length,
+      validTickets: validTickets.length,
+      invalidTickets: invalidTickets.length,
+      usedTickets: usedTickets.length,
+      unusedTickets: serializedTickets.length - usedTickets.length,
+      onlineTickets: serializedTickets.filter((ticket) => ticket.source === "ONLINE").length,
+    },
+  });
+}
+
+async function getAdminContactMessageUser(
+  request: IncomingMessage,
+  response: ServerResponse,
+  permission = "support.message.view",
+) {
+  return getRequiredAdminUser(request, response, {
+    permission,
+    loginMessage: "Vui lòng đăng nhập quản trị để xem tin nhắn liên hệ.",
+    deniedMessage: "Tài khoản không được cấp quyền xử lý tin nhắn liên hệ.",
+  });
+}
+
+const contactMessageStatusLabels = {
+  PENDING: "Chờ phản hồi",
+  IN_PROGRESS: "Đang xử lý",
+  REPLIED: "Đã phản hồi",
+  NEED_FOLLOW_UP: "Cần theo dõi",
+} satisfies Record<ContactMessageStatus, string>;
+
+const validContactMessageStatuses = new Set<string>(
+  [ContactMessageStatus.PENDING, ContactMessageStatus.REPLIED],
+);
+
+const adminContactMessageInclude = {
+  user: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+    },
+  },
+  replies: {
+    orderBy: {
+      createdAt: "asc",
+    },
+    include: {
+      adminUser: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+        },
+      },
+    },
+  },
+} as const;
+
+type AdminContactMessageReplyRecord = {
+  id: number;
+  contactMessageId: number;
+  adminUserId: number | null;
+  content: string;
+  createdAt: Date;
+  updatedAt: Date;
+  adminUser: {
+    id: number;
+    fullName: string;
+    email: string;
+  } | null;
+};
+
+type AdminContactMessageRecord = {
+  id: number;
+  code: string;
+  customerName: string;
+  email: string;
+  phone: string | null;
+  subject: string;
+  content: string;
+  channel: string;
+  status: ContactMessageStatus;
+  repliedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  user: {
+    id: number;
+    fullName: string;
+    email: string;
+    phone: string | null;
+  } | null;
+  replies: AdminContactMessageReplyRecord[];
+};
+
+type ContactMessageDelegate = {
+  create: <T>(args: unknown) => Promise<T>;
+  findMany: <T>(args: unknown) => Promise<T>;
+  findUnique: <T>(args: unknown) => Promise<T | null>;
+  update: <T>(args: unknown) => Promise<T>;
+};
+
+type ContactMessageReplyDelegate = {
+  create: <T>(args: unknown) => Promise<T>;
+};
+
+function getContactMessageDelegate(client: unknown = prisma) {
+  return (client as { contactMessage: ContactMessageDelegate }).contactMessage;
+}
+
+function getContactMessageReplyDelegate(client: unknown = prisma) {
+  return (client as { contactMessageReply: ContactMessageReplyDelegate })
+    .contactMessageReply;
+}
+
+function normalizeContactMessageStatus(status: ContactMessageStatus | string) {
+  return status === ContactMessageStatus.REPLIED
+    ? ContactMessageStatus.REPLIED
+    : ContactMessageStatus.PENDING;
+}
+
+function getContactMessageStatusLabel(status: ContactMessageStatus | string) {
+  const normalizedStatus = normalizeContactMessageStatus(status);
+
+  return (
+    (contactMessageStatusLabels as Record<string, string>)[normalizedStatus] ??
+    normalizedStatus
+  );
+}
+
+function parseContactMessageStatus(value: string) {
+  const normalizedValue = value.trim().toUpperCase();
+
+  if (!validContactMessageStatuses.has(normalizedValue)) {
+    return null;
+  }
+
+  return normalizedValue as ContactMessageStatus;
+}
+
+function serializeAdminContactMessage(message: AdminContactMessageRecord) {
+  const status = normalizeContactMessageStatus(message.status);
+  const replies = message.replies.map((reply) => ({
+    id: reply.id,
+    contactMessageId: reply.contactMessageId,
+    adminUserId: reply.adminUserId,
+    content: reply.content,
+    createdAt: reply.createdAt.toISOString(),
+    updatedAt: reply.updatedAt.toISOString(),
+    adminUser: reply.adminUser
+      ? {
+          id: reply.adminUser.id,
+          fullName: reply.adminUser.fullName,
+          email: reply.adminUser.email,
+        }
+      : null,
+  }));
+
+  return {
+    id: message.id,
+    code: message.code,
+    customerName: message.customerName,
+    email: message.email,
+    phone: message.phone,
+    subject: message.subject,
+    content: message.content,
+    channel: message.channel,
+    status,
+    statusLabel: getContactMessageStatusLabel(status),
+    repliedAt: message.repliedAt?.toISOString() ?? null,
+    createdAt: message.createdAt.toISOString(),
+    updatedAt: message.updatedAt.toISOString(),
+    replies,
+    user: message.user
+      ? {
+          id: message.user.id,
+          fullName: message.user.fullName,
+          email: message.user.email,
+          phone: message.user.phone,
+        }
+      : null,
+  };
+}
+
+async function fetchAdminContactMessages() {
+  return getContactMessageDelegate().findMany<AdminContactMessageRecord[]>({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    include: adminContactMessageInclude,
+  });
+}
+
+async function createUniqueContactMessageCode() {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = `MSG-${getDateKey(new Date()).replace(/-/g, "")}-${randomBytes(3)
+      .toString("hex")
+      .toUpperCase()}`;
+    const existingMessage = await getContactMessageDelegate().findUnique<{
+      id: number;
+    }>({
+      where: {
+        code,
+      },
+    });
+
+    if (!existingMessage) {
+      return code;
+    }
+  }
+
+  throw new Error("Không thể tạo mã tin nhắn liên hệ.");
+}
+
+async function handleCreateSupportContactMessage(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
   const user = await getAuthenticatedUser(request);
 
   if (!user) {
-    sendJson(response, 401, { message: "Vui lòng đăng nhập quản trị để xử lý hoàn tiền." });
-    return null;
+    sendJson(response, 401, {
+      message: "Vui lòng đăng nhập để gửi tin nhắn liên hệ cho admin.",
+    });
+    return;
   }
 
-  if (!isAdminUser(user)) {
-    sendJson(response, 403, { message: "Bạn không có quyền xử lý hoàn tiền." });
-    return null;
+  const body = await readJson(request);
+  const content = stringField(body, "content") || stringField(body, "message");
+  const subject =
+    stringField(body, "subject") || "Liên hệ hỗ trợ từ chatbot";
+
+  if (!content) {
+    sendJson(response, 400, { message: "Vui lòng nhập nội dung liên hệ." });
+    return;
   }
 
-  return user;
+  if (subject.length > 160) {
+    sendJson(response, 400, { message: "Chủ đề liên hệ tối đa 160 ký tự." });
+    return;
+  }
+
+  if (content.length > 2000) {
+    sendJson(response, 400, {
+      message: "Nội dung liên hệ tối đa 2000 ký tự.",
+    });
+    return;
+  }
+
+  const contactMessage = await getContactMessageDelegate().create<AdminContactMessageRecord>({
+    data: {
+      code: await createUniqueContactMessageCode(),
+      userId: user.id,
+      customerName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      subject,
+      content,
+      channel: "Chatbot",
+      status: ContactMessageStatus.PENDING,
+    },
+    include: adminContactMessageInclude,
+  });
+
+  sendJson(response, 201, {
+    message: "Đã gửi tin nhắn liên hệ cho admin.",
+    contactMessage: serializeAdminContactMessage(contactMessage),
+  });
+}
+
+async function handleGetAdminContactMessages(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const requestUser = await getAdminContactMessageUser(request, response);
+
+  if (!requestUser) {
+    return;
+  }
+
+  const messages = (await fetchAdminContactMessages()).map(
+    serializeAdminContactMessage,
+  );
+
+  sendJson(response, 200, {
+    generatedAt: new Date().toISOString(),
+    messages,
+    stats: {
+      totalMessages: messages.length,
+      pendingMessages: messages.filter(
+        (message) => message.status === ContactMessageStatus.PENDING,
+      ).length,
+      repliedMessages: messages.filter(
+        (message) => message.status === ContactMessageStatus.REPLIED,
+      ).length,
+    },
+  });
+}
+
+async function handleCreateAdminContactMessageReply(
+  request: IncomingMessage,
+  response: ServerResponse,
+  messageId: number,
+) {
+  const requestUser = await getAdminContactMessageUser(
+    request,
+    response,
+    "support.message.reply",
+  );
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const content = stringField(body, "content") || stringField(body, "message");
+
+  if (!content) {
+    sendJson(response, 400, { message: "Vui lòng nhập nội dung phản hồi." });
+    return;
+  }
+
+  if (content.length > 2000) {
+    sendJson(response, 400, { message: "Nội dung phản hồi tối đa 2000 ký tự." });
+    return;
+  }
+
+  const existingMessage = await getContactMessageDelegate().findUnique<{
+    id: number;
+    repliedAt: Date | null;
+  }>({
+    where: {
+      id: messageId,
+    },
+  });
+
+  if (!existingMessage) {
+    sendJson(response, 404, { message: "Không tìm thấy tin nhắn liên hệ." });
+    return;
+  }
+
+  const repliedAt = new Date();
+  const reply = await getContactMessageReplyDelegate().create<AdminContactMessageReplyRecord>({
+    data: {
+      contactMessageId: messageId,
+      adminUserId: requestUser.id,
+      content,
+    },
+    include: {
+      adminUser: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+        },
+      },
+    },
+  });
+  const message = await getContactMessageDelegate().update<AdminContactMessageRecord>({
+    where: {
+      id: messageId,
+    },
+    data: {
+      status: ContactMessageStatus.REPLIED,
+      repliedAt: existingMessage.repliedAt ?? repliedAt,
+    },
+    include: adminContactMessageInclude,
+  });
+
+  sendJson(response, 201, {
+    message: "Đã gửi phản hồi cho khách hàng.",
+    reply: {
+      id: reply.id,
+      contactMessageId: reply.contactMessageId,
+      adminUserId: reply.adminUserId,
+      content: reply.content,
+      createdAt: reply.createdAt.toISOString(),
+      updatedAt: reply.updatedAt.toISOString(),
+      adminUser: reply.adminUser
+        ? {
+            id: reply.adminUser.id,
+            fullName: reply.adminUser.fullName,
+            email: reply.adminUser.email,
+          }
+        : null,
+    },
+    contactMessage: serializeAdminContactMessage(message),
+  });
+}
+
+async function handleUpdateAdminContactMessageStatus(
+  request: IncomingMessage,
+  response: ServerResponse,
+  messageId: number,
+) {
+  const requestUser = await getAdminContactMessageUser(
+    request,
+    response,
+    "support.message.reply",
+  );
+
+  if (!requestUser) {
+    return;
+  }
+
+  const body = await readJson(request);
+  const status = parseContactMessageStatus(stringField(body, "status"));
+
+  if (!status) {
+    sendJson(response, 400, { message: "Trạng thái tin nhắn không hợp lệ." });
+    return;
+  }
+
+  const existingMessage = await getContactMessageDelegate().findUnique<{
+    repliedAt: Date | null;
+  }>({
+    where: {
+      id: messageId,
+    },
+  });
+
+  if (!existingMessage) {
+    sendJson(response, 404, { message: "Không tìm thấy tin nhắn liên hệ." });
+    return;
+  }
+
+  const message = await getContactMessageDelegate().update<AdminContactMessageRecord>({
+    where: {
+      id: messageId,
+    },
+    data: {
+      status,
+      repliedAt:
+        status === ContactMessageStatus.REPLIED
+          ? existingMessage.repliedAt ?? new Date()
+          : status === ContactMessageStatus.PENDING
+            ? null
+            : existingMessage.repliedAt,
+    },
+    include: adminContactMessageInclude,
+  });
+
+  sendJson(response, 200, {
+    message: "Đã cập nhật trạng thái tin nhắn liên hệ.",
+    contactMessage: serializeAdminContactMessage(message),
+  });
+}
+
+async function getAdminRefundRequestUser(request: IncomingMessage, response: ServerResponse) {
+  return getRequiredAdminUser(request, response, {
+    permission: "refund.manage",
+    loginMessage: "Vui lòng đăng nhập quản trị để xử lý hoàn tiền.",
+    deniedMessage: "Tài khoản không được cấp quyền xử lý hoàn tiền.",
+  });
 }
 
 const adminRefundRequestInclude = {
@@ -5425,11 +6471,11 @@ async function handleReviewAdminRefundRequest(
           where: {
             bookingId: existingRefundRequest.bookingId,
             status: {
-              not: "CANCELLED",
+              not: "INVALID",
             },
           },
           data: {
-            status: "CANCELLED",
+            status: "INVALID",
           },
         });
 
@@ -6472,7 +7518,7 @@ async function handleCreateTicketBooking(request: IncomingMessage, response: Ser
 
     if (isSeatUnavailableError(error)) {
       sendJson(response, 409, {
-        message: "Mot hoac nhieu ghe vua duoc giu hoac dat boi nguoi khac. Vui long chon lai ghe.",
+        message: "Một hoặc nhiều ghế vừa được giữ hoặc đặt bởi người khác. Vui lòng chọn lại ghế.",
       });
       return;
     }
@@ -7175,6 +8221,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/support/contact-messages") {
+      await handleCreateSupportContactMessage(request, response);
+      return;
+    }
+
     if (request.method === "GET" && requestUrl.pathname === "/api/booking/options") {
       await handleGetTicketBookingOptions(request, response);
       return;
@@ -7215,7 +8266,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const recommendationData = await loadMovieRecommendationsData(request, movieId);
 
       if (!recommendationData) {
-        sendJson(response, 404, { message: "Khong tim thay phim." });
+        sendJson(response, 404, { message: "Không tìm thấy phim." });
         return;
       }
 
@@ -7230,11 +8281,21 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const movieDetailData = await loadMovieDetailData(movieId);
 
       if (!movieDetailData) {
-        sendJson(response, 404, { message: "Khong tim thay phim." });
+        sendJson(response, 404, { message: "Không tìm thấy phim." });
         return;
       }
 
       sendJson(response, 200, movieDetailData);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/genres") {
+      await handleGetPublicGenres(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/genres/movies") {
+      await handleGetPublicGenreMovies(request, response, requestUrl.searchParams);
       return;
     }
 
@@ -7310,6 +8371,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/reviews") {
+      await handleGetAdminMovieReviews(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/contact-messages") {
+      await handleGetAdminContactMessages(request, response);
+      return;
+    }
+
     if (request.method === "GET" && requestUrl.pathname === "/api/admin/showtimes") {
       await handleGetAdminShowtimes(request, response);
       return;
@@ -7322,6 +8393,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
     if (request.method === "GET" && requestUrl.pathname === "/api/admin/payments/transactions") {
       await handleGetAdminPaymentTransactions(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/admin/tickets") {
+      await handleGetAdminTickets(request, response, requestUrl.searchParams);
       return;
     }
 
@@ -7341,8 +8417,38 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
-    const adminAccountMatch = requestUrl.pathname.match(/^\/api\/admin\/accounts\/(\d+)$/);
+    const adminReviewVisibilityMatch = requestUrl.pathname.match(
+      /^\/api\/admin\/reviews\/(\d+)\/(hide|show)$/,
+    );
 
+    if (request.method === "POST" && adminReviewVisibilityMatch) {
+      const reviewId = Number.parseInt(adminReviewVisibilityMatch[1], 10);
+      const action = adminReviewVisibilityMatch[2] as "hide" | "show";
+      await handleSetAdminMovieReviewVisibility(request, response, reviewId, action);
+      return;
+    }
+
+    const adminContactMessageReplyMatch = requestUrl.pathname.match(
+      /^\/api\/admin\/contact-messages\/(\d+)\/replies$/,
+    );
+
+    if (request.method === "POST" && adminContactMessageReplyMatch) {
+      const messageId = Number.parseInt(adminContactMessageReplyMatch[1], 10);
+      await handleCreateAdminContactMessageReply(request, response, messageId);
+      return;
+    }
+
+    const adminContactMessageStatusMatch = requestUrl.pathname.match(
+      /^\/api\/admin\/contact-messages\/(\d+)\/status$/,
+    );
+
+    if (request.method === "POST" && adminContactMessageStatusMatch) {
+      const messageId = Number.parseInt(adminContactMessageStatusMatch[1], 10);
+      await handleUpdateAdminContactMessageStatus(request, response, messageId);
+      return;
+    }
+
+    const adminAccountMatch = requestUrl.pathname.match(/^\/api\/admin\/accounts\/(\d+)$/);
     if (adminAccountMatch) {
       const accountId = Number.parseInt(adminAccountMatch[1], 10);
 

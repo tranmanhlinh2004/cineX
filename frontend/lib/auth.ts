@@ -7,6 +7,7 @@ export type AuthUser = {
   fullName?: string;
   email?: string;
   avatarUrl?: string | null;
+  permissions?: string[];
 };
 
 export const AUTH_USER_KEY = "cinex_auth_user";
@@ -14,7 +15,14 @@ export const AUTH_TOKEN_KEY = "cinex_auth_token";
 export const AUTH_STORAGE_EVENT = "cinex-auth-change";
 export const AUTH_DEV_SESSION_KEY = "cinex_auth_dev_session";
 
-const adminRoles = new Set(["ADMIN", "MANAGER", "STAFF", "ACCOUNTANT"]);
+const adminRoles = new Set([
+  "ADMIN",
+  "MANAGER",
+  "CASHIER",
+  "MOVIE_MANAGER",
+  "ACCOUNTANT",
+  "CUSTOMER_SUPPORT",
+]);
 const isBrowser = () => typeof window !== "undefined";
 let authResetForDevSession = false;
 
@@ -100,6 +108,9 @@ export function getAuthUser(): AuthUser | null {
       fullName: user.fullName,
       email: user.email,
       avatarUrl: user.avatarUrl,
+      permissions: Array.isArray(user.permissions)
+        ? user.permissions.filter((permission) => typeof permission === "string")
+        : undefined,
     };
   } catch {
     return null;
@@ -146,6 +157,20 @@ export function clearAuthUser() {
 
 export function isAdminRole(role?: string | null) {
   return role ? adminRoles.has(role.toUpperCase()) : false;
+}
+
+export function hasPermission(
+  user: AuthUser | null | undefined,
+  permission: string,
+) {
+  return Boolean(user?.permissions?.includes(permission));
+}
+
+export function hasAnyPermission(
+  user: AuthUser | null | undefined,
+  permissions: readonly string[],
+) {
+  return permissions.some((permission) => hasPermission(user, permission));
 }
 
 export function getRedirectPathForRole(role?: string | null) {

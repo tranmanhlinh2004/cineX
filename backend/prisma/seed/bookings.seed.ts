@@ -10,7 +10,7 @@ const bookingPlans = [
     paymentMethod: "CARD" as const,
     paymentStatus: "SUCCESS" as const,
     promotionCode: "CINEX20",
-    note: "Seed booking da thanh toan.",
+    note: "Seed booking đã thanh toán.",
   },
   {
     bookingCode: "CX202605130002",
@@ -21,7 +21,7 @@ const bookingPlans = [
     paymentMethod: "MOMO" as const,
     paymentStatus: "PENDING" as const,
     promotionCode: null,
-    note: "Seed booking dang cho thanh toan.",
+    note: "Seed booking đang chờ thanh toán.",
   },
   {
     bookingCode: "CX202605130003",
@@ -32,7 +32,7 @@ const bookingPlans = [
     paymentMethod: "VNPAY" as const,
     paymentStatus: "SUCCESS" as const,
     promotionCode: "WEEKEND30",
-    note: "Seed booking co ap dung khuyen mai.",
+    note: "Seed booking có áp dụng khuyến mãi.",
   },
   {
     bookingCode: "CX202605130004",
@@ -43,7 +43,7 @@ const bookingPlans = [
     paymentMethod: "BANKING" as const,
     paymentStatus: "REFUNDED" as const,
     promotionCode: null,
-    note: "Seed booking da huy de test trang quan tri.",
+    note: "Seed booking đã hủy để test trang quản trị.",
   },
 ] as const;
 
@@ -130,7 +130,7 @@ async function upsertTicket(params: {
         bookingId: params.bookingId,
         ticketCode: params.ticketCode,
         price: params.price,
-        status: "ACTIVE",
+        status: "VALID",
         qrCode: `QR-${params.ticketCode}`,
         usedAt: null,
       },
@@ -145,7 +145,7 @@ async function upsertTicket(params: {
       seatId: params.seatId,
       ticketCode: params.ticketCode,
       price: params.price,
-      status: "ACTIVE",
+      status: "VALID",
       qrCode: `QR-${params.ticketCode}`,
     },
   });

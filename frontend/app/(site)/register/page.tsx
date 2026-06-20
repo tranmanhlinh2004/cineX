@@ -7,6 +7,7 @@ import { FormEvent, useState } from "react";
 import { register as registerRequest } from "@/lib/auth-api";
 import { getRedirectPathForRole, saveAuthUser } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
+import { showToast } from "@/lib/toast";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -15,15 +16,13 @@ export default function RegisterPage() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setErrorMessage("");
 
     if (password !== confirmPassword) {
-      setErrorMessage("Mật khẩu xác nhận không khớp.");
+      showToast("Mật khẩu xác nhận không khớp.", "error");
       return;
     }
 
@@ -38,12 +37,14 @@ export default function RegisterPage() {
       });
 
       saveAuthUser(authResponse.user, authResponse.token);
+      showToast("Đăng ký thành công.", "success");
       router.push(
         createLoadingPath(authResponse.redirectTo ?? getRedirectPathForRole(authResponse.user.role)),
       );
     } catch (error) {
-      setErrorMessage(
+      showToast(
         error instanceof Error ? error.message : "Đăng ký thất bại. Vui lòng thử lại.",
+        "error",
       );
     } finally {
       setIsSubmitting(false);
@@ -109,12 +110,6 @@ export default function RegisterPage() {
                 onChange={setConfirmPassword}
                 hasEye
               />
-
-              {errorMessage && (
-                <p className="rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm font-semibold text-red-100 md:col-span-2">
-                  {errorMessage}
-                </p>
-              )}
 
               <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center md:col-span-2">
                 <button

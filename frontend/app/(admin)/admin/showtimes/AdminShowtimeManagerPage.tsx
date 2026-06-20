@@ -33,6 +33,14 @@ import {
   type AdminShowtimeStats,
   type AdminShowtimeStatusCode,
 } from "@/lib/admin-showtimes-api";
+import { PermissionButton } from "@/components/admin/PermissionControls";
+import {
+  canUsePermissionRule,
+  permissionDeniedMessage,
+  type PermissionRule,
+} from "@/lib/admin-permissions";
+import { showToast } from "@/lib/toast";
+import { useAuthUser } from "@/lib/use-auth-user";
 
 type AdminShowtimeManagerVariant = "schedule" | "sessions";
 
@@ -396,6 +404,7 @@ export default function AdminShowtimeManagerPage({
   variant,
 }: AdminShowtimeManagerPageProps) {
   const config = variantConfig[variant];
+  const authUser = useAuthUser();
   const [movies, setMovies] = useState<AdminMovieRecord[]>([]);
   const [showtimes, setShowtimes] = useState<AdminShowtimeRecord[]>([]);
   const [options, setOptions] = useState<AdminShowtimeOptions>(emptyOptions);
@@ -613,6 +622,21 @@ export default function AdminShowtimeManagerPage({
     movieScheduleForm && scheduleModalMode === "edit"
       ? movies.filter((movie) => String(movie.id) === movieScheduleForm.movieId)
       : availableScheduleMovies;
+  const permissionsLoaded = Array.isArray(authUser?.permissions);
+  const primaryActionPermissionRule: PermissionRule =
+    variant === "schedule"
+      ? { permission: "showtime.schedule.create" }
+      : { permission: "showtime.session.create" };
+  const canUseAction = (rule: PermissionRule) =>
+    !permissionsLoaded || canUsePermissionRule(authUser, rule);
+  const guardAction = (rule: PermissionRule) => {
+    if (canUseAction(rule)) {
+      return true;
+    }
+
+    showToast(permissionDeniedMessage, "error");
+    return false;
+  };
 
   const updateFilter = <Key extends keyof ShowtimeFilters>(
     key: Key,
@@ -714,6 +738,17 @@ export default function AdminShowtimeManagerPage({
 
     setActionError("");
 
+    if (
+      !guardAction({
+        permission:
+          scheduleModalMode === "create"
+            ? "showtime.schedule.create"
+            : "showtime.manage",
+      })
+    ) {
+      return;
+    }
+
     const movieId = Number(movieScheduleForm.movieId);
 
     if (!movieId) {
@@ -777,6 +812,17 @@ export default function AdminShowtimeManagerPage({
     }
 
     setActionError("");
+
+    if (
+      !guardAction({
+        permission:
+          modalMode === "create"
+            ? "showtime.session.create"
+            : "showtime.manage",
+      })
+    ) {
+      return;
+    }
 
     const payload = buildPayload(formState, options);
 
@@ -889,14 +935,15 @@ export default function AdminShowtimeManagerPage({
           </p>
         </div>
 
-        <button
+        <PermissionButton
           type="button"
+          permissionRule={primaryActionPermissionRule}
           onClick={openCreateModal}
           className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700"
         >
           <Plus size={17} />
           {config.primaryAction}
-        </button>
+        </PermissionButton>
       </section>
 
       {pageError ? (
@@ -964,7 +1011,7 @@ export default function AdminShowtimeManagerPage({
             type="date"
             value={filters.dateKey}
             onChange={(event) => updateFilter("dateKey", event.target.value)}
-            aria-label="Tim theo ngay chieu"
+            aria-label="Tìm theo ngày chiếu"
             className="h-11 rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-red-500"
           />
 
@@ -1111,16 +1158,18 @@ export default function AdminShowtimeManagerPage({
                         </td>
                         <td className="px-4 py-4">
                           <div className="flex items-center justify-center gap-2">
-                            <button
+                            <PermissionButton
                               type="button"
+                              permissionRule={{ permission: "showtime.manage" }}
                               aria-label={`Sửa lịch chiếu ${movie.title}`}
                               onClick={() => openEditMovieScheduleModal(movie)}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
                             >
                               <Pencil size={16} />
-                            </button>
-                            <button
+                            </PermissionButton>
+                            <PermissionButton
                               type="button"
+                              permissionRule={{ permission: "showtime.manage" }}
                               aria-label={`Xóa lịch chiếu ${movie.title}`}
                               title={
                                 hasCreatedShowtimes
@@ -1135,7 +1184,7 @@ export default function AdminShowtimeManagerPage({
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-red-500 text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </PermissionButton>
                           </div>
                         </td>
                       </tr>
@@ -1291,14 +1340,15 @@ export default function AdminShowtimeManagerPage({
                       </td>
                       <td className="px-4 py-4">
                         <div className="flex items-center justify-center">
-                          <button
+                          <PermissionButton
                             type="button"
+                            permissionRule={{ permission: "showtime.session.create" }}
                             onClick={() => openCreateModalForMovie(movie.id)}
                             className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md bg-red-600 px-3 text-sm font-black text-white transition hover:bg-red-700"
                           >
                             <Plus size={16} />
                             Tạo suất
-                          </button>
+                          </PermissionButton>
                         </div>
                       </td>
                     </tr>
@@ -1425,15 +1475,21 @@ export default function AdminShowtimeManagerPage({
                 <X size={17} />
                 Đóng
               </button>
-              <button
+              <PermissionButton
                 type="button"
                 onClick={() => void saveMovieSchedule()}
+                permissionRule={{
+                  permission:
+                    scheduleModalMode === "create"
+                      ? "showtime.schedule.create"
+                      : "showtime.manage",
+                }}
                 disabled={savingMovieSchedule}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
               >
                 <Save size={17} />
                 {savingMovieSchedule ? "Đang lưu..." : "Lưu"}
-              </button>
+              </PermissionButton>
             </div>
           </div>
         </div>
@@ -1578,15 +1634,21 @@ export default function AdminShowtimeManagerPage({
                 <X size={17} />
                 Đóng
               </button>
-              <button
+              <PermissionButton
                 type="button"
                 onClick={() => void saveShowtime()}
+                permissionRule={{
+                  permission:
+                    modalMode === "create"
+                      ? "showtime.session.create"
+                      : "showtime.manage",
+                }}
                 disabled={saving}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
               >
                 <Save size={17} />
                 {saving ? "Đang lưu..." : "Lưu"}
-              </button>
+              </PermissionButton>
             </div>
           </div>
         </div>
@@ -1621,23 +1683,25 @@ function ActionCell({
   return (
     <td className="px-4 py-4">
       <div className="flex items-center justify-center gap-2">
-        <button
+        <PermissionButton
           type="button"
+          permissionRule={{ permission: "showtime.manage" }}
           aria-label={`Sửa ${showtime.movieTitle}`}
           onClick={() => onEdit(showtime)}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
         >
           <Pencil size={16} />
-        </button>
-        <button
+        </PermissionButton>
+        <PermissionButton
           type="button"
+          permissionRule={{ permission: "showtime.manage" }}
           aria-label={`Xóa ${showtime.movieTitle}`}
           disabled={deletingShowtimeId === showtime.id}
           onClick={() => void onDelete(showtime)}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-red-500 text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Trash2 size={16} />
-        </button>
+        </PermissionButton>
       </div>
     </td>
   );

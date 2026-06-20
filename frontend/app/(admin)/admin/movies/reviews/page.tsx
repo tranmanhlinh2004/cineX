@@ -1,6 +1,5 @@
-import AdminModulePage from "@/components/admin/AdminModulePage";
-import { adminMenuPageConfigs } from "@/components/admin/admin-menu-page-configs";
+import AdminMovieReviewsPageClient from "./AdminMovieReviewsPageClient";
 
 export default function AdminMovieReviewsPage() {
-  return <AdminModulePage {...adminMenuPageConfigs.movieReviews} />;
+  return <AdminMovieReviewsPageClient />;
 }

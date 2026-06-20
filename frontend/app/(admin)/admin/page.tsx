@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -11,6 +10,7 @@ import {
   Ticket,
   Users,
 } from "lucide-react";
+import { PermissionLink } from "@/components/admin/PermissionControls";
 
 type SummaryCard = {
   label: string;
@@ -189,14 +189,15 @@ export default function AdminDashboardPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Link
+          <PermissionLink
             href="/ticket-booking?source=admin-counter"
+            permissionRule={{ permission: "booking.create" }}
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white shadow-sm shadow-red-600/20 transition hover:bg-red-700"
             aria-label="Tạo đơn hàng tại quầy"
           >
             <Ticket size={17} />
             Tạo đơn hàng
-          </Link>
+          </PermissionLink>
 
           <div className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 shadow-sm">
             <CalendarClock size={17} className="text-red-600" />
@@ -263,13 +264,14 @@ export default function AdminDashboardPage() {
                   Theo dõi số ghế đã đặt và trạng thái phòng trong ngày.
                 </p>
               </div>
-              <Link
+              <PermissionLink
                 href="/admin/revenue"
+                permissionRule={{ permission: "report.revenue.view" }}
                 className="inline-flex w-fit items-center gap-2 text-sm font-black text-red-700"
               >
                 Xem báo cáo
                 <ArrowRight size={16} />
-              </Link>
+              </PermissionLink>
             </div>
 
             <div className="overflow-x-auto">
@@ -406,13 +408,14 @@ export default function AdminDashboardPage() {
               Doanh thu tăng mạnh ở khung 18:00 - 22:00. Nên ưu tiên thêm suất
               cho phim có tỷ lệ lấp đầy trên 85%.
             </p>
-            <Link
+            <PermissionLink
               href="/admin/revenue"
+              permissionRule={{ permission: "report.revenue.view" }}
               className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
             >
               Xem phân tích doanh thu
               <ArrowRight size={16} />
-            </Link>
+            </PermissionLink>
           </article>
         </aside>
       </section>

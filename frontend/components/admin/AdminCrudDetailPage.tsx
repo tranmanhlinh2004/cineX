@@ -4,6 +4,8 @@ import type {
   AdminCrudConfig,
   AdminCrudRow,
 } from "@/app/(admin)/admin/admin-crud-config";
+import { PermissionLink } from "@/components/admin/PermissionControls";
+import type { PermissionRule } from "@/lib/admin-permissions";
 
 type AdminCrudDetailPageProps = {
   config: AdminCrudConfig;
@@ -25,6 +27,7 @@ function statusClass(value: string) {
     normalized.includes("da thanh toan") ||
     normalized.includes("da phat hanh") ||
     normalized.includes("da soat ve") ||
+    (normalized.includes("hop le") && !normalized.includes("khong hop le")) ||
     normalized.includes("dang mo ban")
   ) {
     return "bg-emerald-50 text-emerald-700";
@@ -42,12 +45,32 @@ function statusClass(value: string) {
   if (
     normalized.includes("khoa") ||
     normalized.includes("huy") ||
+    normalized.includes("khong hop le") ||
     normalized.includes("tam dung")
   ) {
     return "bg-red-50 text-red-700";
   }
 
   return "bg-slate-100 text-slate-700";
+}
+
+function getCrudUpdateRule(config: AdminCrudConfig): PermissionRule {
+  switch (config.key) {
+    case "accounts":
+      return { permission: "user.manage" };
+    case "permissions":
+      return { permission: "role.manage" };
+    case "cinemas":
+      return { permission: "cinema.update" };
+    case "rooms":
+      return { permission: "room.manage" };
+    case "showtimes":
+      return { permission: "showtime.manage" };
+    case "bookings":
+      return { permission: "booking.manage" };
+    case "tickets":
+      return { permission: "booking.manage" };
+  }
 }
 
 export default function AdminCrudDetailPage({
@@ -79,13 +102,14 @@ export default function AdminCrudDetailPage({
           </div>
         </div>
 
-        <Link
+        <PermissionLink
           href={`${config.basePath}/${item.id}/edit`}
+          permissionRule={getCrudUpdateRule(config)}
           className="hidden min-h-10 items-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700 sm:inline-flex"
         >
           <Pencil size={17} />
           Sửa
-        </Link>
+        </PermissionLink>
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -169,13 +193,14 @@ export default function AdminCrudDetailPage({
         </div>
       </article>
 
-      <Link
+      <PermissionLink
         href={`${config.basePath}/${item.id}/edit`}
+        permissionRule={getCrudUpdateRule(config)}
         className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700 sm:hidden"
       >
         <Pencil size={17} />
         Sửa
-      </Link>
+      </PermissionLink>
     </div>
   );
 }

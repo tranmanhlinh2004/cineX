@@ -1,6 +1,7 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api";
 const catalogDateParamPattern = /^\d{4}-\d{2}-\d{2}$/;
+const genreSlugParamPattern = /^[a-z0-9-]{1,120}$/;
 
 export type MovieStatusCode = "COMING_SOON" | "NOW_SHOWING" | "ENDED";
 
@@ -126,6 +127,31 @@ export type MovieCatalogData = {
   error?: string;
 };
 
+export type PublicGenre = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  movieCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublicGenresData = {
+  generatedAt: string | null;
+  genres: PublicGenre[];
+  error?: string;
+};
+
+export type GenreMovieCatalogData = {
+  generatedAt: string | null;
+  genres: PublicGenre[];
+  selectedGenre: PublicGenre | null;
+  movies: HomeMovie[];
+  error?: string;
+  notFound?: boolean;
+};
+
 export type MovieDetailData = {
   generatedAt: string | null;
   movie: HomeMovie | null;
@@ -190,6 +216,16 @@ export function normalizeMovieCatalogDateParam(value?: string | string[]) {
   return rawValue;
 }
 
+export function normalizeGenreSlugParam(value?: string | string[]) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+
+  if (!rawValue || !genreSlugParamPattern.test(rawValue)) {
+    return undefined;
+  }
+
+  return rawValue;
+}
+
 function createEmptyHomePageData(error?: string): HomePageData {
   return {
     generatedAt: null,
@@ -241,6 +277,28 @@ function createEmptyMovieCatalogData(error?: string): MovieCatalogData {
       hasNextPage: false,
     },
     error,
+  };
+}
+
+function createEmptyPublicGenresData(error?: string): PublicGenresData {
+  return {
+    generatedAt: null,
+    genres: [],
+    error,
+  };
+}
+
+function createEmptyGenreMovieCatalogData(
+  error?: string,
+  options: { notFound?: boolean } = {},
+): GenreMovieCatalogData {
+  return {
+    generatedAt: null,
+    genres: [],
+    selectedGenre: null,
+    movies: [],
+    error,
+    notFound: options.notFound,
   };
 }
 
@@ -309,6 +367,60 @@ export function getComingSoonPageData(params?: MovieCatalogParams) {
   return getMovieCatalogData("/movies/coming-soon", params);
 }
 
+export async function getPublicGenres(): Promise<PublicGenresData> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}/genres`, {
+      cache: "no-store",
+    });
+  } catch {
+    return createEmptyPublicGenresData("Không kết nối được backend.");
+  }
+
+  if (!response.ok) {
+    return createEmptyPublicGenresData("Không thể tải thể loại phim từ database.");
+  }
+
+  return (await response.json()) as PublicGenresData;
+}
+
+export async function getGenreMovieCatalogData(
+  genreSlug?: string,
+): Promise<GenreMovieCatalogData> {
+  const searchParams = new URLSearchParams();
+
+  if (genreSlug) {
+    searchParams.set("genre", genreSlug);
+  }
+
+  const query = searchParams.toString();
+  const path = query ? `/genres/movies?${query}` : "/genres/movies";
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      cache: "no-store",
+    });
+  } catch {
+    return createEmptyGenreMovieCatalogData("Không kết nối được backend.");
+  }
+
+  if (response.status === 404) {
+    return createEmptyGenreMovieCatalogData("Không tìm thấy thể loại phim.", {
+      notFound: true,
+    });
+  }
+
+  if (!response.ok) {
+    return createEmptyGenreMovieCatalogData(
+      "Không thể tải danh sách phim theo thể loại từ database.",
+    );
+  }
+
+  return (await response.json()) as GenreMovieCatalogData;
+}
+
 export async function getMovieDetailPageData(
   movieId: number,
 ): Promise<MovieDetailData> {
@@ -320,19 +432,19 @@ export async function getMovieDetailPageData(
     });
   } catch {
     return createEmptyMovieDetailData(
-      "Khong ket noi duoc backend. Hay chay backend o cong 4000.",
+      "Không kết nối được backend. Hãy chạy backend ở cổng 4000.",
     );
   }
 
   if (response.status === 404) {
-    return createEmptyMovieDetailData("Khong tim thay phim.", {
+    return createEmptyMovieDetailData("Không tìm thấy phim.", {
       notFound: true,
     });
   }
 
   if (!response.ok) {
     return createEmptyMovieDetailData(
-      "Khong the tai du lieu chi tiet phim tu database.",
+      "Không thể tải dữ liệu chi tiết phim từ database.",
     );
   }
 

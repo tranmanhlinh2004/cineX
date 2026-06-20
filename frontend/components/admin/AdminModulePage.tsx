@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import {
   Eye,
@@ -8,6 +7,11 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
+import {
+  PermissionButton,
+  PermissionLink,
+} from "@/components/admin/PermissionControls";
+import type { PermissionRule } from "@/lib/admin-permissions";
 
 type AdminModuleStat = {
   label: string;
@@ -103,6 +107,101 @@ function getRowRouteId(row: AdminModuleRow, columns: AdminModuleColumn[]) {
   return toRouteId(Object.values(row).join("-"));
 }
 
+function getModuleActionRule(
+  basePath: string | undefined,
+  title: string,
+  action: "view" | "create" | "update" | "delete",
+): PermissionRule {
+  const normalizedTitle = normalizeText(title);
+
+  if (basePath?.startsWith("/admin/accounts")) {
+    return { permission: action === "view" ? "user.view" : "user.manage" };
+  }
+
+  if (basePath?.startsWith("/admin/permissions")) {
+    return { permission: "role.manage" };
+  }
+
+  if (
+    basePath?.startsWith("/admin/rooms") ||
+    normalizedTitle.includes("phong") ||
+    normalizedTitle.includes("ghe")
+  ) {
+    return { permission: "room.manage" };
+  }
+
+  if (basePath?.startsWith("/admin/cinemas")) {
+    if (action === "create") {
+      return { permission: "cinema.create" };
+    }
+
+    if (action === "update" || action === "delete") {
+      return { permission: "cinema.update" };
+    }
+
+    return { permission: "cinema.view" };
+  }
+
+  if (basePath?.startsWith("/admin/showtimes")) {
+    if (action === "create") {
+      return { permission: "showtime.session.create" };
+    }
+
+    if (action === "update" || action === "delete") {
+      return { permission: "showtime.manage" };
+    }
+
+    return { permission: "showtime.view" };
+  }
+
+  if (basePath?.startsWith("/admin/bookings")) {
+    if (action === "create") {
+      return { permission: "booking.create" };
+    }
+
+    if (action === "delete") {
+      return { permission: "booking.cancel" };
+    }
+
+    return { permission: action === "view" ? "booking.view" : "booking.manage" };
+  }
+
+  if (basePath?.startsWith("/admin/tickets")) {
+    return {
+      permission: action === "view" ? "booking.view" : "booking.manage",
+    };
+  }
+
+  if (normalizedTitle.includes("khuyen mai")) {
+    return { permission: "promotion.manage" };
+  }
+
+  if (normalizedTitle.includes("hoa don")) {
+    return { permission: "invoice.export" };
+  }
+
+  if (normalizedTitle.includes("giao dich")) {
+    return { permission: "payment.view" };
+  }
+
+  if (normalizedTitle.includes("hoan tien")) {
+    return { permission: "refund.manage" };
+  }
+
+  if (normalizedTitle.includes("danh gia")) {
+    return { permission: "review.manage" };
+  }
+
+  if (normalizedTitle.includes("tin nhan") || normalizedTitle.includes("lien he")) {
+    return {
+      permission:
+        action === "view" ? "support.message.view" : "support.message.reply",
+    };
+  }
+
+  return { permission: "admin.access" };
+}
+
 function statusClass(value: string) {
   const normalized = normalizeText(value);
 
@@ -111,6 +210,8 @@ function statusClass(value: string) {
     normalized.includes("da thanh toan") ||
     normalized.includes("da phat hanh") ||
     normalized.includes("da soat ve") ||
+    normalized.includes("da phan hoi") ||
+    (normalized.includes("hop le") && !normalized.includes("khong hop le")) ||
     normalized.includes("dang chieu") ||
     normalized.includes("da xac nhan") ||
     normalized.includes("dang mo ban")
@@ -132,6 +233,8 @@ function statusClass(value: string) {
     normalized.includes("khoa") ||
     normalized.includes("huy") ||
     normalized.includes("het") ||
+    normalized.includes("khong hop le") ||
+    normalized.includes("can theo doi") ||
     normalized.includes("tam dung")
   ) {
     return "border-red-200 bg-red-50 text-red-700";
@@ -156,6 +259,11 @@ export default function AdminModulePage({
   tableSections,
 }: AdminModulePageProps) {
   const activeBasePath = basePath ?? adminModuleBasePaths[eyebrow];
+  const createPermissionRule = getModuleActionRule(
+    activeBasePath,
+    title,
+    "create",
+  );
   const sections = tableSections ?? [
     {
       tableTitle,
@@ -181,21 +289,23 @@ export default function AdminModulePage({
         </div>
 
         {activeBasePath ? (
-          <Link
+          <PermissionLink
             href={`${activeBasePath}/new`}
+            permissionRule={createPermissionRule}
             className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700"
           >
             <Plus size={17} />
             {primaryAction}
-          </Link>
+          </PermissionLink>
         ) : (
-          <button
+          <PermissionButton
             type="button"
+            permissionRule={createPermissionRule}
             className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700"
           >
             <Plus size={17} />
             {primaryAction}
-          </button>
+          </PermissionButton>
         )}
       </section>
 
@@ -309,6 +419,21 @@ export default function AdminModulePage({
                       ? `${activeBasePath}/${routeId}`
                       : "";
                   const editHref = detailHref ? `${detailHref}/edit` : "";
+                  const viewPermissionRule = getModuleActionRule(
+                    activeBasePath,
+                    title,
+                    "view",
+                  );
+                  const updatePermissionRule = getModuleActionRule(
+                    activeBasePath,
+                    title,
+                    "update",
+                  );
+                  const deletePermissionRule = getModuleActionRule(
+                    activeBasePath,
+                    title,
+                    "delete",
+                  );
 
                   return (
                     <tr
@@ -347,48 +472,53 @@ export default function AdminModulePage({
                       <td className="px-4 py-4">
                         <div className="flex items-center justify-center gap-2">
                           {detailHref ? (
-                            <Link
+                            <PermissionLink
                               href={detailHref}
+                              permissionRule={viewPermissionRule}
                               aria-label={`Xem ${rowTitle}`}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-400 text-slate-600 transition hover:bg-slate-50"
                             >
                               <Eye size={16} />
-                            </Link>
+                            </PermissionLink>
                           ) : (
-                            <button
+                            <PermissionButton
                               type="button"
+                              permissionRule={viewPermissionRule}
                               aria-label="Xem chi tiết"
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-400 text-slate-600 transition hover:bg-slate-50"
                             >
                               <Eye size={16} />
-                            </button>
+                            </PermissionButton>
                           )}
 
                           {editHref ? (
-                            <Link
+                            <PermissionLink
                               href={editHref}
+                              permissionRule={updatePermissionRule}
                               aria-label={`Sửa ${rowTitle}`}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
                             >
                               <Pencil size={16} />
-                            </Link>
+                            </PermissionLink>
                           ) : (
-                            <button
+                            <PermissionButton
                               type="button"
+                              permissionRule={updatePermissionRule}
                               aria-label="Chỉnh sửa"
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
                             >
                               <Pencil size={16} />
-                            </button>
+                            </PermissionButton>
                           )}
 
-                          <button
+                          <PermissionButton
                             type="button"
+                            permissionRule={deletePermissionRule}
                             aria-label={`Xóa ${rowTitle}`}
                             className="flex h-9 w-9 items-center justify-center rounded-md border border-red-500 text-red-600 transition hover:bg-red-50"
                           >
                             <Trash2 size={16} />
-                          </button>
+                          </PermissionButton>
                         </div>
                       </td>
                     </tr>

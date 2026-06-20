@@ -8,6 +8,21 @@ type AuthResponse = {
   redirectTo?: string;
 };
 
+export class AuthApiError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "AuthApiError";
+    this.status = status;
+    Object.setPrototypeOf(this, AuthApiError.prototype);
+  }
+}
+
+export function isAuthApiError(error: unknown): error is AuthApiError {
+  return error instanceof AuthApiError;
+}
+
 type LoginPayload = {
   identifier: string;
   password: string;
@@ -43,6 +58,7 @@ type RefundRequestPayload = {
 export type PaymentMethodCode = "CASH" | "MOMO" | "VNPAY" | "ZALOPAY" | "BANKING" | "CARD";
 export type PaymentStatusCode = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED";
 export type BookingStatusCode = "PENDING" | "CONFIRMED" | "CANCELLED" | "EXPIRED";
+export type TicketStatusCode = "VALID" | "INVALID";
 export type RefundStatusCode = "PENDING" | "APPROVED" | "REJECTED";
 
 export type BookingRefundRequest = {
@@ -127,7 +143,9 @@ export type BookingHistoryItem = {
     id: number;
     ticketCode: string;
     qrCode: string | null;
-    status: string;
+    status: TicketStatusCode;
+    statusLabel: string;
+    usedAt: string | null;
   }[];
   refund: {
     canRequest: boolean;
@@ -190,7 +208,7 @@ async function postAuth(path: string, payload: LoginPayload | RegisterPayload) {
       body: JSON.stringify(payload),
     });
   } catch {
-    throw new Error(
+    throw new AuthApiError(
       "Không kết nối được backend. Hãy chạy backend ở cổng 4000 bằng: npm.cmd run start",
     );
   }
@@ -200,11 +218,14 @@ async function postAuth(path: string, payload: LoginPayload | RegisterPayload) {
     | null;
 
   if (!response.ok) {
-    throw new Error(data?.message || "Không thể kết nối đến máy chủ.");
+    throw new AuthApiError(
+      data?.message || "Không thể kết nối đến máy chủ.",
+      response.status,
+    );
   }
 
   if (!data?.token || !data.user) {
-    throw new Error("Phản hồi đăng nhập không hợp lệ.");
+    throw new AuthApiError("Phản hồi đăng nhập không hợp lệ.");
   }
 
   return data as AuthResponse;
@@ -220,7 +241,7 @@ async function requestAccount<T>(
   const token = getAuthToken();
 
   if (!token) {
-    throw new Error("Vui lòng đăng nhập để sử dụng chức năng tài khoản.");
+    throw new AuthApiError("Vui lòng đăng nhập để sử dụng chức năng tài khoản.", 401);
   }
 
   let response: Response;
@@ -235,7 +256,7 @@ async function requestAccount<T>(
       body: options.payload ? JSON.stringify(options.payload) : undefined,
     });
   } catch {
-    throw new Error(
+    throw new AuthApiError(
       "Không kết nối được backend. Hãy chạy backend ở cổng 4000 bằng: npm.cmd run start",
     );
   }
@@ -245,7 +266,10 @@ async function requestAccount<T>(
     | null;
 
   if (!response.ok) {
-    throw new Error(data?.message || "Không thể kết nối đến máy chủ.");
+    throw new AuthApiError(
+      data?.message || "Không thể kết nối đến máy chủ.",
+      response.status,
+    );
   }
 
   return data as T;

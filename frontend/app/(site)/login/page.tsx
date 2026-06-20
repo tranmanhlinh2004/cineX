@@ -7,13 +7,13 @@ import { FormEvent, useEffect, useState } from "react";
 import { login as loginRequest } from "@/lib/auth-api";
 import { getAuthToken, getAuthUser, getRedirectPathForRole, saveAuthUser } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
+import { showToast } from "@/lib/toast";
 
 export default function LoginPage() {
   const router = useRouter();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [rememberAccount, setRememberAccount] = useState(true);
-  const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -29,7 +29,6 @@ export default function LoginPage() {
     event.preventDefault();
 
     const trimmedIdentifier = identifier.trim();
-    setErrorMessage("");
     setIsSubmitting(true);
 
     try {
@@ -47,12 +46,14 @@ export default function LoginPage() {
       }
 
       setPassword("");
+      showToast("Đăng nhập thành công.", "success");
       router.push(
         createLoadingPath(authResponse.redirectTo ?? getRedirectPathForRole(authResponse.user.role)),
       );
     } catch (error) {
-      setErrorMessage(
+      showToast(
         error instanceof Error ? error.message : "Đăng nhập thất bại. Vui lòng thử lại.",
+        "error",
       );
     } finally {
       setIsSubmitting(false);
@@ -126,12 +127,6 @@ export default function LoginPage() {
                     Đăng ký
                   </Link>
                 </p>
-
-                {errorMessage && (
-                  <p className="rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm font-semibold text-red-100">
-                    {errorMessage}
-                  </p>
-                )}
 
                 <button
                   type="submit"

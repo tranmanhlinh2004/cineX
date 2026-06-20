@@ -15,13 +15,15 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageSquareText,
   Search,
   Settings,
+  Star,
   Ticket,
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AUTH_STORAGE_EVENT,
   clearAuthUser,
@@ -29,65 +31,201 @@ import {
   getAuthUser,
   isAdminRole,
 } from "@/lib/auth";
+import {
+  canAccessAdminPath,
+  canUsePermissionRule,
+  getDefaultAdminPath,
+  permissionDeniedMessage,
+  type PermissionRule,
+} from "@/lib/admin-permissions";
 import { createLoadingPath } from "@/lib/navigation";
+import { showToast } from "@/lib/toast";
 
 type AdminNavItem = {
   label: string;
   href: string;
   icon: LucideIcon;
+  permissionRule?: PermissionRule;
   children?: {
     label: string;
     href: string;
+    permissionRule?: PermissionRule;
   }[];
 };
 
 const adminNavItems: AdminNavItem[] = [
-  { label: "Tổng quan", href: "/admin/dashboard", icon: LayoutDashboard },
-  { label: "Tài khoản", href: "/admin/accounts", icon: Users },
+  {
+    label: "Tổng quan",
+    href: "/admin/dashboard",
+    icon: LayoutDashboard,
+    permissionRule: { permission: "admin.access" },
+  },
+  {
+    label: "Tài khoản",
+    href: "/admin/accounts",
+    icon: Users,
+    permissionRule: { permission: "user.view" },
+  },
   {
     label: "Quản lý phim",
     href: "/admin/movies/now-showing",
     icon: Clapperboard,
+    permissionRule: { permission: "movie.view" },
     children: [
-      { label: "Phim đang chiếu", href: "/admin/movies/now-showing" },
-      { label: "Phim sắp chiếu", href: "/admin/movies/coming-soon" },
-      { label: "Thể loại phim", href: "/admin/movies/genres" },
-      { label: "Quản lý đánh giá", href: "/admin/movies/reviews" },
+      {
+        label: "Phim đang chiếu",
+        href: "/admin/movies/now-showing",
+        permissionRule: { permission: "movie.view" },
+      },
+      {
+        label: "Phim sắp chiếu",
+        href: "/admin/movies/coming-soon",
+        permissionRule: { permission: "movie.view" },
+      },
+      {
+        label: "Thể loại phim",
+        href: "/admin/movies/genres",
+        permissionRule: { permission: "genre.view" },
+      },
     ],
+  },
+  {
+    label: "Quản lý đánh giá",
+    href: "/admin/movies/reviews",
+    icon: Star,
+    permissionRule: { permission: "review.manage" },
   },
   {
     label: "Quản lý rạp",
     href: "/admin/cinemas",
     icon: Building2,
+    permissionRule: { permission: "cinema.view" },
     children: [
-      { label: "Loại phòng chiếu", href: "/admin/cinemas/room-types" },
-      { label: "Sơ đồ ghế", href: "/admin/cinemas/seat-maps" },
-      { label: "Loại ghế", href: "/admin/cinemas/seat-types" },
+      {
+        label: "Loại phòng chiếu",
+        href: "/admin/cinemas/room-types",
+        permissionRule: { permission: "room.manage" },
+      },
+      {
+        label: "Sơ đồ ghế",
+        href: "/admin/cinemas/seat-maps",
+        permissionRule: { permission: "room.manage" },
+      },
+      {
+        label: "Loại ghế",
+        href: "/admin/cinemas/seat-types",
+        permissionRule: { permission: "room.manage" },
+      },
     ],
   },
   {
     label: "Lịch chiếu, suất chiếu",
     href: "/admin/showtimes",
     icon: CalendarClock,
+    permissionRule: { permission: "showtime.view" },
     children: [
-      { label: "Lịch chiếu", href: "/admin/showtimes/schedules" },
-      { label: "Suất chiếu", href: "/admin/showtimes/sessions" },
+      {
+        label: "Lịch chiếu",
+        href: "/admin/showtimes/schedules",
+        permissionRule: { permission: "showtime.view" },
+      },
+      {
+        label: "Suất chiếu",
+        href: "/admin/showtimes/sessions",
+        permissionRule: { permission: "showtime.view" },
+      },
     ],
   },
   {
     label: "Quản lý thanh toán",
     href: "/admin/payments",
     icon: CreditCard,
+    permissionRule: {
+      anyPermission: ["payment.view", "refund.manage", "invoice.export"],
+    },
     children: [
-      { label: "Lịch sử giao dịch", href: "/admin/payments/transactions" },
-      { label: "Phê duyệt hoàn tiền", href: "/admin/payments/refund-approvals" },
-      { label: "Xuất hóa đơn", href: "/admin/payments/invoices" },
+      {
+        label: "Lịch sử giao dịch",
+        href: "/admin/payments/transactions",
+        permissionRule: { permission: "payment.view" },
+      },
+      {
+        label: "Phê duyệt hoàn tiền",
+        href: "/admin/payments/refund-approvals",
+        permissionRule: { permission: "refund.manage" },
+      },
+      {
+        label: "Xuất hóa đơn",
+        href: "/admin/payments/invoices",
+        permissionRule: { permission: "invoice.export" },
+      },
     ],
   },
-  { label: "Quản lý vé", href: "/admin/tickets", icon: Ticket },
-  { label: "Khuyến mãi", href: "/admin/promotions", icon: BadgePercent },
-  { label: "Thống kê doanh thu", href: "/admin/revenue", icon: CircleDollarSign },
+  {
+    label: "Quản lý vé",
+    href: "/admin/tickets",
+    icon: Ticket,
+    permissionRule: { permission: "booking.view" },
+  },
+  {
+    label: "Tin nhắn liên hệ",
+    href: "/admin/contact-messages",
+    icon: MessageSquareText,
+    permissionRule: { permission: "support.message.view" },
+  },
+  {
+    label: "Khuyến mãi",
+    href: "/admin/promotions",
+    icon: BadgePercent,
+    permissionRule: { permission: "promotion.manage" },
+  },
+  {
+    label: "Thống kê doanh thu",
+    href: "/admin/revenue",
+    icon: CircleDollarSign,
+    permissionRule: { permission: "report.revenue.view" },
+  },
 ];
+
+function moveNavItemAfter(
+  items: AdminNavItem[],
+  itemHref: string,
+  targetHref: string,
+) {
+  const itemToMove = items.find((item) => item.href === itemHref);
+
+  if (!itemToMove) {
+    return items;
+  }
+
+  const orderedItems: AdminNavItem[] = [];
+  let inserted = false;
+
+  for (const item of items) {
+    if (item.href === itemHref) {
+      continue;
+    }
+
+    orderedItems.push(item);
+
+    if (item.href === targetHref) {
+      orderedItems.push(itemToMove);
+      inserted = true;
+    }
+  }
+
+  if (!inserted) {
+    orderedItems.push(itemToMove);
+  }
+
+  return orderedItems;
+}
+
+const adminNavItemsForDisplay = moveNavItemAfter(
+  adminNavItems,
+  "/admin/movies/reviews",
+  "/admin/contact-messages",
+);
 
 function isActivePath(pathname: string, href: string) {
   if (href === "/admin/dashboard") {
@@ -97,10 +235,8 @@ function isActivePath(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function hasAdminSession() {
-  const user = getAuthUser();
-
-  return Boolean(getAuthToken() && user && isAdminRole(user.role));
+function hasLoadedPermissions(user: ReturnType<typeof getAuthUser>) {
+  return Array.isArray(user?.permissions);
 }
 
 export default function AdminShell({
@@ -112,21 +248,41 @@ export default function AdminShell({
   const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [adminSessionReady, setAdminSessionReady] = useState(false);
+  const [authUser, setAuthUser] = useState(() => getAuthUser());
   const [openNavState, setOpenNavState] = useState<{
     pathname: string;
     items: Record<string, boolean>;
   }>({ pathname, items: {} });
+  const unauthorizedPathRef = useRef("");
 
   useEffect(() => {
     const verifyAdminSession = () => {
-      if (hasAdminSession()) {
+      const user = getAuthUser();
+      const hasSession = Boolean(getAuthToken() && user && isAdminRole(user.role));
+
+      setAuthUser(user);
+
+      if (!hasSession) {
+        setAdminSessionReady(false);
+        setMobileMenuOpen(false);
+        router.replace(createLoadingPath("/login"));
+        return;
+      }
+
+      if (hasLoadedPermissions(user) && !canAccessAdminPath(user, pathname)) {
+        if (unauthorizedPathRef.current !== pathname) {
+          unauthorizedPathRef.current = pathname;
+          showToast(permissionDeniedMessage, "error");
+        }
+
+        setMobileMenuOpen(false);
+        router.replace(createLoadingPath(getDefaultAdminPath(user)));
         setAdminSessionReady(true);
         return;
       }
 
-      setAdminSessionReady(false);
-      setMobileMenuOpen(false);
-      router.replace(createLoadingPath("/login"));
+      unauthorizedPathRef.current = "";
+      setAdminSessionReady(true);
     };
 
     verifyAdminSession();
@@ -146,6 +302,7 @@ export default function AdminShell({
 
   const handleLogout = () => {
     setAdminSessionReady(false);
+    setAuthUser(null);
     clearAuthUser();
     setMobileMenuOpen(false);
     router.replace(createLoadingPath("/login"));
@@ -168,6 +325,10 @@ export default function AdminShell({
     });
   };
 
+  const notifyMissingPermission = () => {
+    showToast(permissionDeniedMessage, "error");
+  };
+
   if (!adminSessionReady) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f6f7f9] px-6 text-slate-950">
@@ -180,8 +341,21 @@ export default function AdminShell({
 
   const navList = (
     <nav className="grid gap-1">
-      {adminNavItems.map((item) => {
+      {adminNavItemsForDisplay.map((item) => {
         const Icon = item.icon;
+        const permissionsLoaded = Array.isArray(authUser?.permissions);
+        const childAccess = item.children?.map((child) => ({
+          ...child,
+          canUse:
+            !permissionsLoaded ||
+            canUsePermissionRule(authUser, child.permissionRule),
+        }));
+        const hasAccessibleChild =
+          childAccess?.some((child) => child.canUse) ?? false;
+        const canUseItem =
+          !permissionsLoaded ||
+          canUsePermissionRule(authUser, item.permissionRule) ||
+          hasAccessibleChild;
         const active = isActivePath(pathname, item.href);
         const activeChild =
           item.children?.some((child) => isActivePath(pathname, child.href)) ??
@@ -199,14 +373,22 @@ export default function AdminShell({
                 aria-current={parentCurrent ? "page" : undefined}
                 aria-expanded={submenuOpen}
                 aria-controls={submenuId}
-                onClick={() => toggleNavItem(item.href, activeChild)}
+                aria-disabled={!canUseItem}
+                onClick={() => {
+                  if (!canUseItem) {
+                    notifyMissingPermission();
+                    return;
+                  }
+
+                  toggleNavItem(item.href, activeChild);
+                }}
                 className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-left text-sm font-bold transition ${
                   activeChild
                     ? "bg-red-50 text-red-700"
                     : active
                       ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
                       : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-                }`}
+                } ${canUseItem ? "" : "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-slate-600"}`}
               >
                 <Icon size={18} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
@@ -221,12 +403,21 @@ export default function AdminShell({
               <Link
                 href={item.href}
                 aria-current={parentCurrent ? "page" : undefined}
-                onClick={() => setMobileMenuOpen(false)}
+                aria-disabled={!canUseItem}
+                onClick={(event) => {
+                  if (!canUseItem) {
+                    event.preventDefault();
+                    notifyMissingPermission();
+                    return;
+                  }
+
+                  setMobileMenuOpen(false);
+                }}
                 className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-bold transition ${
                   active
                     ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
                     : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-                }`}
+                } ${canUseItem ? "" : "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-slate-600"}`}
               >
                 <Icon size={18} className="shrink-0" />
                 <span className="truncate">{item.label}</span>
@@ -238,20 +429,31 @@ export default function AdminShell({
                 id={submenuId}
                 className="ml-6 grid gap-1 border-l border-slate-200 pl-3"
               >
-                {item.children.map((child) => {
+                {(childAccess ?? item.children).map((child) => {
                   const childActive = isActivePath(pathname, child.href);
+                  const canUseChild =
+                    "canUse" in child ? child.canUse : canUseItem;
 
                   return (
                     <Link
                       key={child.href}
                       href={child.href}
                       aria-current={childActive ? "page" : undefined}
-                      onClick={() => setMobileMenuOpen(false)}
+                      aria-disabled={!canUseChild}
+                      onClick={(event) => {
+                        if (!canUseChild) {
+                          event.preventDefault();
+                          notifyMissingPermission();
+                          return;
+                        }
+
+                        setMobileMenuOpen(false);
+                      }}
                       className={`flex min-h-9 items-center rounded-md px-3 text-sm font-bold transition ${
                         childActive
                           ? "bg-red-600 text-white shadow-sm shadow-red-600/20"
                           : "text-slate-500 hover:bg-slate-100 hover:text-slate-950"
-                      }`}
+                      } ${canUseChild ? "" : "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-slate-500"}`}
                     >
                       <span className="truncate">{child.label}</span>
                     </Link>

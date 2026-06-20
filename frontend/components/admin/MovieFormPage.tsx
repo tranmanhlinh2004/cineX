@@ -23,6 +23,13 @@ import {
   type AdminMovieRecord,
   type AdminMovieStatusCode,
 } from "@/lib/admin-movies-api";
+import { PermissionButton } from "@/components/admin/PermissionControls";
+import {
+  canUsePermissionRule,
+  permissionDeniedMessage,
+} from "@/lib/admin-permissions";
+import { showToast } from "@/lib/toast";
+import { useAuthUser } from "@/lib/use-auth-user";
 import { normalizeYouTubeTrailerUrl } from "@/lib/youtube";
 
 type MovieFormPageProps = {
@@ -132,6 +139,7 @@ function MovieDatePicker({
 export default function MovieFormPage({ mode, movieId, movie }: MovieFormPageProps) {
   const router = useRouter();
   const isEdit = mode === "edit";
+  const authUser = useAuthUser();
   const [loadedMovie, setLoadedMovie] = useState<AdminMovieRecord | null>(
     movie ?? null,
   );
@@ -183,10 +191,21 @@ export default function MovieFormPage({ mode, movieId, movie }: MovieFormPagePro
   const currentMovie = isEdit ? loadedMovie : null;
   const movieListPath = getAdminMovieListPath(currentMovie?.statusCode);
   const primaryGenre = currentMovie?.genres[0] ?? "";
+  const savePermissionRule = {
+    permission: isEdit ? "movie.update" : "movie.create",
+  };
+  const permissionsLoaded = Array.isArray(authUser?.permissions);
+  const canSaveMovie =
+    !permissionsLoaded || canUsePermissionRule(authUser, savePermissionRule);
 
   const saveMovie = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setActionError("");
+
+    if (!canSaveMovie) {
+      showToast(permissionDeniedMessage, "error");
+      return;
+    }
 
     const formData = new FormData(event.currentTarget);
     const payload = buildMoviePayload(formData);
@@ -526,8 +545,9 @@ export default function MovieFormPage({ mode, movieId, movie }: MovieFormPagePro
         >
           Hủy
         </Link>
-        <button
+        <PermissionButton
           type="submit"
+          permissionRule={savePermissionRule}
           disabled={isSaving}
           className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
         >
@@ -537,7 +557,7 @@ export default function MovieFormPage({ mode, movieId, movie }: MovieFormPagePro
             : isEdit
               ? "Lưu thay đổi"
               : "Tạo phim mới"}
-        </button>
+        </PermissionButton>
       </section>
     </form>
   );

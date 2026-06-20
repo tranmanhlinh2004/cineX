@@ -28,6 +28,7 @@ import {
   markAllNotificationsRead,
   type AccountNotification,
 } from "@/lib/auth-api";
+import { getPublicGenres, type PublicGenre } from "@/lib/home-movies";
 import { createLoadingPath } from "@/lib/navigation";
 
 const navItems = [
@@ -69,6 +70,8 @@ export default function Header() {
   const [notificationError, setNotificationError] = useState("");
   const [notifications, setNotifications] = useState<AccountNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [genres, setGenres] = useState<PublicGenre[]>([]);
+  const [genresLoading, setGenresLoading] = useState(true);
 
   const isAuthPage = authRoutes.includes(pathname);
   const showAuthActions = !isAuthPage;
@@ -102,6 +105,28 @@ export default function Header() {
       window.removeEventListener(AUTH_STORAGE_EVENT, syncAuthUser);
       window.removeEventListener("pageshow", syncAuthUser);
       window.removeEventListener("focus", syncAuthUser);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void getPublicGenres()
+        .then((data) => {
+          if (active) {
+            setGenres(data.genres);
+          }
+        })
+        .finally(() => {
+          if (active) {
+            setGenresLoading(false);
+          }
+        });
+    }, 0);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
     };
   }, []);
 
@@ -303,6 +328,17 @@ export default function Header() {
             {navItems.map((item) => {
               const active = isActiveRoute(item.href);
 
+              if (item.href === "/genres") {
+                return (
+                  <DesktopGenreMenu
+                    key={item.href}
+                    active={active}
+                    genres={genres}
+                    loading={genresLoading}
+                  />
+                );
+              }
+
               return (
                 <Link
                   key={item.href}
@@ -350,6 +386,18 @@ export default function Header() {
           <nav className="grid gap-1">
             {navItems.map((item) => {
               const active = isActiveRoute(item.href);
+
+              if (item.href === "/genres") {
+                return (
+                  <MobileGenreMenu
+                    key={item.href}
+                    active={active}
+                    genres={genres}
+                    loading={genresLoading}
+                    onClose={() => setOpenMenu(false)}
+                  />
+                );
+              }
 
               return (
                 <Link
@@ -497,6 +545,119 @@ function NotificationDropdown({
               </article>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DesktopGenreMenu({
+  active,
+  genres,
+  loading,
+}: {
+  active: boolean;
+  genres: PublicGenre[];
+  loading: boolean;
+}) {
+  return (
+    <div className="group relative">
+      <Link
+        href="/genres"
+        aria-current={active ? "page" : undefined}
+        className={`inline-flex items-center gap-1 px-2 py-2 text-sm font-bold transition ${
+          active
+            ? "text-[#aebcff]"
+            : "text-white/76 hover:text-[#aebcff]"
+        }`}
+      >
+        Thể Loại
+        <ChevronDown
+          size={14}
+          className="mt-0.5 transition group-hover:rotate-180"
+        />
+      </Link>
+
+      <div className="invisible absolute left-1/2 top-full z-50 w-[580px] -translate-x-1/2 pt-3 opacity-0 transition duration-150 group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100">
+        <div className="max-h-[420px] overflow-y-auto rounded-[10px] bg-[#0f1320]/98 px-6 py-5 shadow-2xl shadow-black/55 ring-1 ring-white/5 backdrop-blur">
+          {loading ? (
+            <div className="flex min-h-28 items-center justify-center gap-2 text-sm font-semibold text-white/60">
+              <Loader2 size={16} className="animate-spin" />
+              Đang tải thể loại...
+            </div>
+          ) : genres.length === 0 ? (
+            <div className="flex min-h-28 items-center justify-center text-sm font-semibold text-white/60">
+              Chưa có thể loại trong database.
+            </div>
+          ) : (
+            <div className="grid grid-cols-4 gap-x-10 gap-y-5">
+              {genres.map((genre) => (
+                <Link
+                  key={genre.id}
+                  href={`/genres?genre=${genre.slug}`}
+                  title={genre.name}
+                  className="block min-w-0 truncate text-sm font-semibold leading-5 text-white/90 transition hover:text-[#aebcff]"
+                >
+                  {genre.name}
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileGenreMenu({
+  active,
+  genres,
+  loading,
+  onClose,
+}: {
+  active: boolean;
+  genres: PublicGenre[];
+  loading: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <div className="rounded-md bg-white/[0.02]">
+      <Link
+        href="/genres"
+        aria-current={active ? "page" : undefined}
+        onClick={onClose}
+        className={`flex items-center justify-between rounded-md px-4 py-3 text-sm font-semibold transition ${
+          active
+            ? "bg-red-600 text-white"
+            : "text-white/76 hover:bg-white/8 hover:text-white"
+        }`}
+      >
+        <span>Thể loại</span>
+        <ChevronDown size={15} />
+      </Link>
+
+      <div className="grid gap-1 px-3 pb-3">
+        {loading ? (
+          <div className="flex items-center gap-2 rounded-md px-3 py-2 text-xs font-bold text-white/55">
+            <Loader2 size={14} className="animate-spin" />
+            Đang tải thể loại...
+          </div>
+        ) : genres.length === 0 ? (
+          <div className="rounded-md px-3 py-2 text-xs font-bold text-white/55">
+            Chưa có thể loại.
+          </div>
+        ) : (
+          genres.map((genre) => (
+            <Link
+              key={genre.id}
+              href={`/genres?genre=${genre.slug}`}
+              onClick={onClose}
+              className="flex items-center justify-between rounded-md px-3 py-2 text-xs font-bold text-white/60 transition hover:bg-white/8 hover:text-white"
+            >
+              <span>{genre.name}</span>
+              <span className="text-white/35">{genre.movieCount}</span>
+            </Link>
+          ))
         )}
       </div>
     </div>

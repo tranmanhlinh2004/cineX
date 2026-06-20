@@ -12,6 +12,7 @@ export type AdminPaymentMethodCode =
   | "CARD";
 
 export type AdminPaymentStatusCode = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED";
+export type AdminTicketStatusCode = "VALID" | "INVALID";
 
 export type AdminPaymentTransaction = {
   id: number;
@@ -64,7 +65,8 @@ export type AdminPaymentTransaction = {
   tickets: {
     id: number;
     ticketCode: string;
-    status: string;
+    status: AdminTicketStatusCode;
+    statusLabel: string;
   }[];
 };
 

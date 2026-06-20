@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -28,6 +27,10 @@ import {
   type AdminAccountRecord,
   type AdminAccountsResponse,
 } from "@/lib/admin-accounts-api";
+import {
+  PermissionButton,
+  PermissionLink,
+} from "@/components/admin/PermissionControls";
 
 type AdminAccount = {
   id: string;
@@ -109,11 +112,34 @@ const defaultAccountFilters: AccountFilters = {
 
 const roleOptions = [
   "Khách hàng",
-  "Nhân viên rạp",
-  "Quản lý rạp",
-  "Kế toán",
+  "Nhân viên thu ngân",
+  "Nhân viên quản lý phim",
+  "Nhân viên kế toán",
+  "Nhân viên chăm sóc khách hàng",
+  "Quản lý",
   "Quản trị viên",
 ];
+
+const roleNameByLabel: Record<string, string> = {
+  [roleOptions[0]]: "CUSTOMER",
+  [roleOptions[1]]: "CASHIER",
+  [roleOptions[2]]: "MOVIE_MANAGER",
+  [roleOptions[3]]: "ACCOUNTANT",
+  [roleOptions[4]]: "CUSTOMER_SUPPORT",
+  [roleOptions[5]]: "MANAGER",
+  [roleOptions[6]]: "ADMIN",
+};
+
+const roleLabelByName: Record<string, string> = {
+  ADMIN: roleOptions[6],
+  MANAGER: roleOptions[5],
+  CASHIER: roleOptions[1],
+  STAFF: roleOptions[1],
+  MOVIE_MANAGER: roleOptions[2],
+  ACCOUNTANT: roleOptions[3],
+  CUSTOMER_SUPPORT: roleOptions[4],
+  CUSTOMER: roleOptions[0],
+};
 
 const statusOptions = ["Đang hoạt động", "Bị khóa"];
 
@@ -184,6 +210,15 @@ const permissionGroups: PermissionGroup[] = [
           { id: "booking-management.create", label: "Tạo đơn tại quầy" },
           { id: "booking-management.cancel", label: "Hủy đơn" },
           { id: "booking-management.refund", label: "Hoàn tiền" },
+          { id: "booking-management.invoice", label: "Xuất hóa đơn" },
+        ],
+      },
+      {
+        id: "customer-support",
+        label: "Chăm sóc khách hàng",
+        permissions: [
+          { id: "customer-support.review-reply", label: "Trả lời bình luận / đánh giá" },
+          { id: "customer-support.message-reply", label: "Trả lời tin nhắn liên hệ" },
         ],
       },
     ],
@@ -260,45 +295,79 @@ function getDefaultPermissionIdsForAccount(account: AdminAccount) {
     return allPermissionIds;
   }
 
-  if (account.role === "Quản lý rạp") {
+  if (account.role === "Quản lý") {
     return [
       "customer-account.view",
       "staff-account.view",
       "role-assignment.view",
       "movie-management.view",
+      "movie-management.create",
       "movie-management.update",
+      "movie-management.delete",
       "showtime-management.view",
       "showtime-management.create",
       "showtime-management.update",
       "showtime-management.price",
       "booking-management.view",
+      "booking-management.create",
       "booking-management.cancel",
+      "booking-management.refund",
+      "booking-management.invoice",
+      "customer-support.review-reply",
+      "customer-support.message-reply",
       "ticket-report.view",
       "revenue-report.view",
+      "revenue-report.export",
     ];
   }
 
-  if (account.role === "Nhân viên rạp") {
+  if (account.role === "Nhân viên thu ngân") {
     return [
       "customer-account.view",
       "movie-management.view",
       "showtime-management.view",
       "booking-management.view",
       "booking-management.create",
+      "booking-management.cancel",
+      "booking-management.refund",
+      "booking-management.invoice",
       "ticket-report.view",
       "ticket-report.scan",
     ];
   }
 
-  if (account.role === "Kế toán") {
+  if (account.role === "Nhân viên quản lý phim") {
+    return [
+      "movie-management.view",
+      "movie-management.create",
+      "movie-management.update",
+      "movie-management.delete",
+      "showtime-management.view",
+      "showtime-management.create",
+      "showtime-management.update",
+      "showtime-management.price",
+    ];
+  }
+
+  if (account.role === "Nhân viên kế toán") {
     return [
       "booking-management.view",
+      "booking-management.invoice",
       "ticket-report.view",
       "ticket-report.export",
       "revenue-report.view",
       "revenue-report.detail",
       "revenue-report.export",
       "revenue-report.compare",
+    ];
+  }
+
+  if (account.role === "Nhân viên chăm sóc khách hàng") {
+    return [
+      "customer-account.view",
+      "booking-management.view",
+      "customer-support.review-reply",
+      "customer-support.message-reply",
     ];
   }
 
@@ -325,12 +394,14 @@ function formatStatValue(value: number) {
 }
 
 function toAdminAccount(record: AdminAccountRecord): AdminAccount {
+  const roleName = record.role.trim().toUpperCase();
+
   return {
     id: String(record.id),
     name: record.name,
     email: record.email,
     phone: record.phone || "",
-    role: record.roleLabel,
+    role: roleLabelByName[roleName] ?? record.roleLabel,
     lastLogin: record.lastLogin,
     status: record.status,
   };
@@ -351,19 +422,35 @@ function buildNewAccount(): AdminAccount {
 
 function buildAccountPayload(account: AdminAccount): AdminAccountPayload {
   const password = account.password?.trim();
+  const roleName =
+    roleNameByLabel[account.role] ??
+    (account.role.trim().toUpperCase() === "STAFF"
+      ? "CASHIER"
+      : undefined);
 
   return {
     name: account.name.trim(),
     email: account.email.trim(),
     phone: account.phone.trim(),
     role: account.role,
+    ...(roleName ? { roleName } : {}),
     status: account.status,
     ...(password ? { password } : {}),
   };
 }
 
 function isSystemRole(role: string) {
-  return role !== "Khách hàng";
+  const normalizedRole = normalizeText(role);
+
+  return (
+    Boolean(normalizedRole) &&
+    normalizedRole !== "khach hang" &&
+    normalizedRole !== "customer"
+  );
+}
+
+function isSystemAccountRecord(record: AdminAccountRecord) {
+  return record.isSystemAccount || isSystemRole(record.roleLabel || record.role);
 }
 
 function normalizeText(value: string) {
@@ -448,13 +535,28 @@ export default function AdminAccountsPageClient() {
 
     try {
       const data = await getAdminAccounts();
-      const nextCustomerAccounts = data.customerAccounts.map(toAdminAccount);
-      const nextSystemAccounts = data.systemAccounts.map(toAdminAccount);
+      const accountRecords =
+        data.accounts.length > 0
+          ? data.accounts
+          : [...data.customerAccounts, ...data.systemAccounts];
+      const nextCustomerAccounts = accountRecords
+        .filter((account) => !isSystemAccountRecord(account))
+        .map(toAdminAccount);
+      const nextSystemAccounts = accountRecords
+        .filter(isSystemAccountRecord)
+        .map(toAdminAccount);
       const nextAccounts = [...nextCustomerAccounts, ...nextSystemAccounts];
+      const activeAccounts = accountRecords.filter((account) => account.isActive);
 
       setCustomerAccountRows(nextCustomerAccounts);
       setSystemAccountRows(nextSystemAccounts);
-      setAccountStats(data.stats);
+      setAccountStats({
+        ...data.stats,
+        totalAccounts: accountRecords.length,
+        activeAccounts: activeAccounts.length,
+        systemAccounts: nextSystemAccounts.length,
+        blockedAccounts: accountRecords.length - activeAccounts.length,
+      });
       setAccountPermissions(buildPermissionState(nextAccounts));
     } catch (error) {
       setAccountsError(
@@ -749,14 +851,15 @@ export default function AdminAccountsPageClient() {
           </p>
         </div>
 
-        <button
+        <PermissionButton
           type="button"
+          permissionRule={{ permission: "user.manage" }}
           onClick={openCreateAccountModal}
           className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700"
         >
           <Plus size={17} />
           Thêm tài khoản
-        </button>
+        </PermissionButton>
       </section>
 
       
@@ -925,30 +1028,33 @@ export default function AdminAccountsPageClient() {
                         })}
                         <td className="px-4 py-4">
                           <div className="flex items-center justify-center gap-2">
-                            <Link
+                            <PermissionLink
                               href={`/admin/accounts/${toRouteId(account.name)}`}
+                              permissionRule={{ permission: "user.view" }}
                               aria-label={`Xem ${account.name}`}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-400 text-slate-600 transition hover:bg-slate-50"
                             >
                               <Eye size={16} />
-                            </Link>
-                            <button
+                            </PermissionLink>
+                            <PermissionButton
                               type="button"
                               aria-label={`Sửa ${account.name}`}
+                              permissionRule={{ permission: "user.manage" }}
                               onClick={() => openAccountModal(account)}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
                             >
                               <Pencil size={16} />
-                            </button>
-                            <button
+                            </PermissionButton>
+                            <PermissionButton
                               type="button"
                               aria-label={`Xóa ${account.name}`}
+                              permissionRule={{ permission: "user.manage" }}
                               disabled={deletingAccountId === account.id}
                               onClick={() => void deleteAccount(account)}
                               className="flex h-9 w-9 items-center justify-center rounded-md border border-red-500 text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </PermissionButton>
                           </div>
                         </td>
                       </tr>
@@ -1340,15 +1446,16 @@ export default function AdminAccountsPageClient() {
                 <X size={17} />
                 Đóng
               </button>
-              <button
+              <PermissionButton
                 type="button"
                 onClick={saveSelectedAccount}
+                permissionRule={{ permission: "user.manage" }}
                 disabled={isSavingAccount}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 text-sm font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
               >
                 <Save size={17} />
                 {isSavingAccount ? "Đang lưu..." : "Lưu"}
-              </button>
+              </PermissionButton>
             </div>
           </div>
         </div>

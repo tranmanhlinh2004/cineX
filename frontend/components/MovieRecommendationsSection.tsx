@@ -82,12 +82,12 @@ export default function MovieRecommendationsSection({
   const isPersonalized = data?.basis.isPersonalized ?? false;
   const topGenres = data?.basis.topGenres ?? [];
   const title = isPersonalized
-    ? "Goi y danh rieng cho ban"
-    : "Phim cung the loai";
+    ? "Gợi ý dành riêng cho bạn"
+    : "Phim cùng thể loại";
   const subtitle =
     topGenres.length > 0
-      ? `The loai noi bat: ${topGenres.join(", ")}`
-      : "Nhung phim phu hop voi lua chon hien tai.";
+      ? `Thể loại nổi bật: ${topGenres.join(", ")}`
+      : "Những phim phù hợp với lựa chọn hiện tại.";
 
   return (
     <section className="mt-8 rounded-lg border border-white/10 bg-[#151719] p-5 shadow-2xl shadow-black/20 sm:p-7">
@@ -108,12 +108,12 @@ export default function MovieRecommendationsSection({
         {isPersonalized ? (
           <span className="inline-flex w-fit items-center gap-2 rounded-md border border-red-300/20 bg-red-500/10 px-3 py-2 text-xs font-black text-red-100">
             <Ticket size={14} />
-            Tu lich su dat ve
+            Từ lịch sử đặt vé
           </span>
         ) : (
           <span className="inline-flex w-fit items-center gap-2 rounded-md border border-cyan-300/20 bg-cyan-400/10 px-3 py-2 text-xs font-black text-cyan-100">
             <Film size={14} />
-            Cung so thich phim
+            Cùng sở thích phim
           </span>
         )}
       </div>
@@ -157,7 +157,7 @@ function RecommendationCard({ movie }: { movie: HomeMovie }) {
     : `/ticket-booking?movie=${movie.slug}`;
   const detailHref = `/movies/${movie.id}`;
   const ActionIcon = isComingSoon ? Bell : Ticket;
-  const actionLabel = isComingSoon ? "Nhac toi" : "Dat ve";
+  const actionLabel = isComingSoon ? "Nhắc tôi" : "Đặt vé";
   const badgeClass = isComingSoon
     ? "bg-cyan-400 text-black"
     : "bg-red-600 text-white";
@@ -230,7 +230,7 @@ function RecommendationCard({ movie }: { movie: HomeMovie }) {
             className="inline-flex items-center justify-center gap-2 rounded-md bg-white px-4 py-2.5 text-xs font-black text-black transition hover:bg-gray-200"
           >
             <Film size={15} />
-            Chi tiet
+            Chi tiết
           </Link>
           <Link
             href={actionHref}

@@ -5,6 +5,8 @@ import type {
   AdminCrudField,
   AdminCrudRow,
 } from "@/app/(admin)/admin/admin-crud-config";
+import { PermissionButton } from "@/components/admin/PermissionControls";
+import type { PermissionRule } from "@/lib/admin-permissions";
 
 type AdminCrudFormPageProps = {
   config: AdminCrudConfig;
@@ -17,6 +19,37 @@ const inputClass =
 const textareaClass =
   "min-h-32 w-full rounded-md border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100";
 const labelClass = "grid gap-2 text-sm font-bold text-slate-700";
+
+function getCrudFormRule(
+  config: AdminCrudConfig,
+  mode: "create" | "edit",
+): PermissionRule {
+  const action = mode === "create" ? "create" : "update";
+
+  switch (config.key) {
+    case "accounts":
+      return { permission: "user.manage" };
+    case "permissions":
+      return { permission: "role.manage" };
+    case "cinemas":
+      return {
+        permission: action === "create" ? "cinema.create" : "cinema.update",
+      };
+    case "rooms":
+      return { permission: "room.manage" };
+    case "showtimes":
+      return {
+        permission:
+          action === "create" ? "showtime.session.create" : "showtime.manage",
+      };
+    case "bookings":
+      return {
+        permission: action === "create" ? "booking.create" : "booking.manage",
+      };
+    case "tickets":
+      return { permission: "booking.manage" };
+  }
+}
 
 function FieldControl({
   field,
@@ -129,13 +162,14 @@ export default function AdminCrudFormPage({
         >
           Hủy
         </Link>
-        <button
+        <PermissionButton
           type="button"
+          permissionRule={getCrudFormRule(config, mode)}
           className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-red-600 px-5 text-sm font-black text-white transition hover:bg-red-700"
         >
           <Save size={17} />
           {isEdit ? config.updateAction : config.createAction}
-        </button>
+        </PermissionButton>
       </section>
     </div>
   );

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  AlertCircle,
   CalendarDays,
   CheckCircle2,
   Clock3,
@@ -28,6 +27,7 @@ import {
 } from "@/lib/auth-api";
 import { getAuthToken } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
+import { showToast } from "@/lib/toast";
 
 const paymentMethodLabels: Record<PaymentMethodCode, string> = {
   CASH: "Tiền mặt",
@@ -49,11 +49,6 @@ const dateTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
   hour12: false,
 });
 
-type Notice = {
-  type: "success" | "error";
-  text: string;
-};
-
 export default function BookingHistoryPage() {
   const router = useRouter();
   const [bookings, setBookings] = useState<BookingHistoryItem[]>([]);
@@ -65,7 +60,6 @@ export default function BookingHistoryPage() {
   const [refundingBookingId, setRefundingBookingId] = useState<number | null>(null);
   const [refundModalBooking, setRefundModalBooking] = useState<BookingHistoryItem | null>(null);
   const [selectedRefundReason, setSelectedRefundReason] = useState("");
-  const [notice, setNotice] = useState<Notice | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const pendingCount = useMemo(
@@ -110,8 +104,6 @@ export default function BookingHistoryPage() {
       setIsLoading(true);
     }
 
-    setNotice(null);
-
     try {
       const data = await getBookingHistory();
 
@@ -119,13 +111,10 @@ export default function BookingHistoryPage() {
       setPaymentMethods(data.paymentMethods);
       syncSelectedMethods(data.bookings);
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải lịch sử đặt vé.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể tải lịch sử đặt vé.",
+        "error",
+      );
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -162,7 +151,6 @@ export default function BookingHistoryPage() {
     const method = selectedMethods[booking.id] ?? booking.payment.method;
 
     setPayingBookingId(booking.id);
-    setNotice(null);
 
     try {
       const result = await payBooking(booking.id, { method });
@@ -180,18 +168,12 @@ export default function BookingHistoryPage() {
         await loadBookings({ silent: true });
       }
 
-      setNotice({
-        type: "success",
-        text: result.message,
-      });
+      showToast(result.message, "success");
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể thanh toán đơn hàng.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể thanh toán đơn hàng.",
+        "error",
+      );
       await loadBookings({ silent: true });
     } finally {
       setPayingBookingId(null);
@@ -203,7 +185,6 @@ export default function BookingHistoryPage() {
 
     setRefundModalBooking(booking);
     setSelectedRefundReason(defaultReason);
-    setNotice(null);
   };
 
   const handleSubmitRefundRequest = async () => {
@@ -212,7 +193,6 @@ export default function BookingHistoryPage() {
     }
 
     setRefundingBookingId(refundModalBooking.id);
-    setNotice(null);
 
     try {
       const result = await requestBookingRefund(refundModalBooking.id, {
@@ -227,16 +207,13 @@ export default function BookingHistoryPage() {
         await loadBookings({ silent: true });
       }
 
-      setNotice({ type: "success", text: result.message });
+      showToast(result.message, "success");
       setRefundModalBooking(null);
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể gửi yêu cầu hoàn tiền.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể gửi yêu cầu hoàn tiền.",
+        "error",
+      );
       await loadBookings({ silent: true });
     } finally {
       setRefundingBookingId(null);
@@ -290,8 +267,6 @@ export default function BookingHistoryPage() {
             tone="success"
           />
         </div>
-
-        {notice ? <NoticeBox notice={notice} /> : null}
 
         {isLoading ? (
           <div className="rounded-lg border border-white/10 bg-[#151719] p-8">
@@ -758,24 +733,6 @@ function InfoText({ label, value }: { label: string; value: string }) {
     <div className="min-w-0">
       <p className="text-xs font-black uppercase text-white/35">{label}</p>
       <p className="mt-1 truncate text-white">{value}</p>
-    </div>
-  );
-}
-
-function NoticeBox({ notice }: { notice: Notice }) {
-  const isSuccess = notice.type === "success";
-  const Icon = isSuccess ? CheckCircle2 : AlertCircle;
-
-  return (
-    <div
-      className={`mb-5 flex items-start gap-2 rounded-md border px-4 py-3 text-sm font-bold ${
-        isSuccess
-          ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
-          : "border-red-400/30 bg-red-500/10 text-red-100"
-      }`}
-    >
-      <Icon size={17} className="mt-0.5 shrink-0" />
-      <span>{notice.text}</span>
     </div>
   );
 }

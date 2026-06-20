@@ -18,6 +18,7 @@ import {
   type AdminMovieRecord,
   type AdminMovieStatusCode,
 } from "@/lib/admin-movies-api";
+import { PermissionLink } from "@/components/admin/PermissionControls";
 
 type AdminMovieDetailPageClientProps = {
   movieId: string;
@@ -137,13 +138,14 @@ export default function AdminMovieDetailPageClient({
           </div>
         </div>
 
-        <Link
+        <PermissionLink
           href={`/admin/movies/${movie.id}/edit`}
+          permissionRule={{ permission: "movie.update" }}
           className="hidden min-h-10 items-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700 sm:inline-flex"
         >
           <Pencil size={17} />
           Sửa phim
-        </Link>
+        </PermissionLink>
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">

@@ -74,7 +74,7 @@ export default function MovieReviewsSection({
         : null;
 
       setSelectedRating(userReview?.rating ?? 5);
-      setComment(userReview?.comment ?? "");
+      setComment("");
     };
 
     syncAuthUser();
@@ -97,7 +97,7 @@ export default function MovieReviewsSection({
 
     if (!authUser) {
       setNotice("");
-      setError("Vui long dang nhap de binh luan va danh gia phim.");
+      setError("Vui lòng đăng nhập để bình luận và đánh giá phim.");
       return;
     }
 
@@ -105,7 +105,7 @@ export default function MovieReviewsSection({
 
     if (trimmedComment.length > 1000) {
       setNotice("");
-      setError("Binh luan khong duoc vuot qua 1000 ky tu.");
+      setError("Bình luận không được vượt quá 1000 ký tự.");
       return;
     }
 
@@ -126,14 +126,14 @@ export default function MovieReviewsSection({
       setAverageRating(updatedMovie.rating);
       setReviewCount(updatedMovie.reviewCount);
       setSelectedRating(updatedOwnReview?.rating ?? selectedRating);
-      setComment(updatedOwnReview?.comment ?? trimmedComment);
-      setNotice(data.message ?? "Da luu binh luan va danh gia phim.");
+      setComment("");
+      setNotice(data.message ?? "Đã lưu bình luận và đánh giá phim.");
       router.refresh();
     } catch (reviewError) {
       setError(
         reviewError instanceof Error
           ? reviewError.message
-          : "Khong the luu binh luan va danh gia.",
+          : "Không thể lưu bình luận và đánh giá.",
       );
     } finally {
       setIsSubmitting(false);
@@ -146,7 +146,7 @@ export default function MovieReviewsSection({
         <div className="min-w-0">
           <div className="flex items-center gap-3">
             <MessageSquareText className="text-red-300" size={23} />
-            <h2 className="text-2xl font-black">Binh luan va danh gia</h2>
+            <h2 className="text-2xl font-black">Bình luận và đánh giá</h2>
           </div>
           <p className="mt-2 text-sm font-semibold text-white/55">
             {movieTitle}
@@ -155,7 +155,7 @@ export default function MovieReviewsSection({
 
         <div className="grid w-full grid-cols-2 gap-3 sm:w-auto">
           <div className="rounded-md border border-white/10 bg-black/25 px-4 py-3">
-            <p className="text-xs font-black uppercase text-white/38">Diem</p>
+            <p className="text-xs font-black uppercase text-white/38">Điểm</p>
             <p className="mt-1 text-2xl font-black text-yellow-300">
               {averageRating}/10
             </p>
@@ -167,13 +167,73 @@ export default function MovieReviewsSection({
         </div>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[360px_1fr]">
+      <div className="mt-6 grid gap-6">
+        <div className="min-w-0">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h3 className="text-base font-black text-white">Danh sách bình luận</h3>
+            <span className="text-xs font-black uppercase text-white/38">
+              {reviewCount} review
+            </span>
+          </div>
+
+          {reviews.length > 0 ? (
+            <div className="grid gap-3">
+              {reviews.map((review) => (
+                <article
+                  key={review.id}
+                  className="rounded-lg border border-white/10 bg-black/20 p-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sm font-black text-black">
+                        {getInitials(review.userName) || (
+                          <UserCircle size={22} />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate text-sm font-black text-white">
+                            {review.userName}
+                          </h3>
+                          {authUser?.id === review.userId ? (
+                            <span className="rounded-md bg-red-500/15 px-2 py-1 text-[11px] font-black text-red-100">
+                              Của bạn
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-0.5 text-xs font-semibold text-white/38">
+                          {formatReviewDate(review.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                    <ReviewStars rating={review.rating} />
+                  </div>
+
+                  <p className="mt-4 text-sm leading-6 text-white/68">
+                    {review.comment || "Người dùng này chỉ đánh giá bằng sao."}
+                  </p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="flex min-h-[180px] flex-col items-center justify-center rounded-lg border border-dashed border-white/15 bg-black/15 px-5 text-center">
+              <MessageSquareText className="text-white/28" size={34} />
+              <p className="mt-3 text-sm font-black text-white">
+                Chưa có bình luận nào
+              </p>
+              <p className="mt-1 max-w-sm text-sm leading-6 text-white/45">
+                Hãy là người đầu tiên chia sẻ cảm nhận về phim này.
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="rounded-lg border border-white/10 bg-black/20 p-4 sm:p-5">
           {authReady && authUser ? (
             <form onSubmit={handleSubmit} className="grid gap-4">
               <div>
                 <p className="text-sm font-black text-white">
-                  {ownReview ? "Cap nhat danh gia cua ban" : "Danh gia phim"}
+                  {ownReview ? "Gửi đánh bình luận" : "Đánh giá phim"}
                 </p>
                 <p className="mt-1 text-xs font-semibold text-white/48">
                   {authUser.fullName || authUser.email}
@@ -182,12 +242,12 @@ export default function MovieReviewsSection({
 
               <div>
                 <label className="text-xs font-black uppercase text-white/40">
-                  Chon so sao
+                  Chọn số sao
                 </label>
                 <div
                   className="mt-2 flex flex-wrap gap-2"
                   role="radiogroup"
-                  aria-label="Chon so sao"
+                  aria-label="Chọn số sao"
                 >
                   {ratingOptions.map((rating) => {
                     const isActive = selectedRating >= rating;
@@ -218,14 +278,13 @@ export default function MovieReviewsSection({
                   htmlFor="movie-review-comment"
                   className="text-xs font-black uppercase text-white/40"
                 >
-                  Binh luan
+                  Bình luận
                 </label>
                 <textarea
                   id="movie-review-comment"
                   value={comment}
                   maxLength={1000}
                   onChange={(event) => setComment(event.target.value)}
-                  placeholder="Chia se cam nhan cua ban ve phim..."
                   className="mt-2 min-h-[132px] w-full resize-y rounded-md border border-white/10 bg-[#101214] px-3 py-3 text-sm font-semibold leading-6 text-white outline-none transition placeholder:text-white/28 focus:border-red-400"
                 />
                 <p className="mt-1 text-right text-xs font-semibold text-white/35">
@@ -255,17 +314,17 @@ export default function MovieReviewsSection({
                 ) : (
                   <Send size={17} />
                 )}
-                {isSubmitting ? "Dang luu" : "Gui danh gia"}
+                {isSubmitting ? "Đang lưu" : "Gửi đánh giá"}
               </button>
             </form>
           ) : authReady ? (
             <div className="grid gap-4">
               <div>
                 <p className="text-sm font-black text-white">
-                  Dang nhap de binh luan
+                  Đăng nhập để bình luận
                 </p>
                 <p className="mt-2 text-sm leading-6 text-white/55">
-                  Ban van co the xem binh luan va danh gia cua khan gia khac.
+                  Bạn vẫn có thể xem bình luận và đánh giá của khán giả khác.
                 </p>
               </div>
               <Link
@@ -273,65 +332,12 @@ export default function MovieReviewsSection({
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-white px-4 py-2.5 text-sm font-black text-black transition hover:bg-gray-200"
               >
                 <LogIn size={17} />
-                Dang nhap
+                Đăng nhập
               </Link>
             </div>
           ) : (
             <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-sm font-semibold text-white/55">
-              Dang kiem tra dang nhap...
-            </div>
-          )}
-        </div>
-
-        <div className="min-w-0">
-          {reviews.length > 0 ? (
-            <div className="grid gap-3">
-              {reviews.map((review) => (
-                <article
-                  key={review.id}
-                  className="rounded-lg border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-sm font-black text-black">
-                        {getInitials(review.userName) || (
-                          <UserCircle size={22} />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="truncate text-sm font-black text-white">
-                            {review.userName}
-                          </h3>
-                          {authUser?.id === review.userId ? (
-                            <span className="rounded-md bg-red-500/15 px-2 py-1 text-[11px] font-black text-red-100">
-                              Cua ban
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-0.5 text-xs font-semibold text-white/38">
-                          {formatReviewDate(review.createdAt)}
-                        </p>
-                      </div>
-                    </div>
-                    <ReviewStars rating={review.rating} />
-                  </div>
-
-                  <p className="mt-4 text-sm leading-6 text-white/68">
-                    {review.comment || "Nguoi dung nay chi danh gia bang sao."}
-                  </p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="flex min-h-[180px] flex-col items-center justify-center rounded-lg border border-dashed border-white/15 bg-black/15 px-5 text-center">
-              <MessageSquareText className="text-white/28" size={34} />
-              <p className="mt-3 text-sm font-black text-white">
-                Chua co binh luan nao
-              </p>
-              <p className="mt-1 max-w-sm text-sm leading-6 text-white/45">
-                Hay la nguoi dau tien chia se cam nhan ve phim nay.
-              </p>
+              Đang kiểm tra đăng nhập...
             </div>
           )}
         </div>

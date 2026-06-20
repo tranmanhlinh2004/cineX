@@ -136,7 +136,7 @@ export default function HeroMovieSlider({ movies }: HeroMovieSliderProps) {
                       className="inline-flex items-center justify-center gap-2 rounded-md border border-white/10 bg-white/10 px-6 py-3 text-sm font-black text-white transition hover:border-white/35 hover:bg-white/15"
                     >
                       <Film size={18} />
-                      Chi tiet phim
+                      Chi tiết phim
                     </Link>
 
                     <a

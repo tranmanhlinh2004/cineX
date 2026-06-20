@@ -20,11 +20,7 @@ import {
   type AdminPaymentStatusCode,
   type AdminPaymentTransaction,
 } from "@/lib/admin-payments-api";
-
-type Notice = {
-  type: "success" | "error";
-  text: string;
-};
+import { showToast } from "@/lib/toast";
 
 type InvoiceStatusCode = "READY" | "WAITING" | "INVALID" | "REFUNDED";
 
@@ -80,7 +76,6 @@ export default function AdminInvoicesPageClient() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [exportingInvoiceCode, setExportingInvoiceCode] = useState<string | null>(null);
-  const [notice, setNotice] = useState<Notice | null>(null);
 
   const loadInvoices = async (options: { silent?: boolean } = {}) => {
     if (options.silent) {
@@ -88,21 +83,17 @@ export default function AdminInvoicesPageClient() {
     } else {
       setIsLoading(true);
     }
-
-    setNotice(null);
-
     try {
       const data = await getAdminPaymentTransactions();
 
       setTransactions(data.transactions);
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải danh sách giao dịch để lập hóa đơn.",
-      });
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "Không thể tải danh sách giao dịch để lập hóa đơn.",
+        "error",
+      );
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -160,22 +151,15 @@ export default function AdminInvoicesPageClient() {
 
   const handleExportInvoice = async (invoice: InvoiceRecord) => {
     setExportingInvoiceCode(invoice.invoiceCode);
-    setNotice(null);
 
     try {
       await exportInvoicePdf(invoice);
-      setNotice({
-        type: "success",
-        text: `Đã tạo file PDF cho hóa đơn ${invoice.invoiceCode}.`,
-      });
+      showToast(`Đã tạo file PDF cho hóa đơn ${invoice.invoiceCode}.`, "success");
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể xuất hóa đơn ra PDF.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể xuất hóa đơn ra PDF.",
+        "error",
+      );
     } finally {
       setExportingInvoiceCode(null);
     }
@@ -236,8 +220,6 @@ export default function AdminInvoicesPageClient() {
           tone="warning"
         />
       </section>
-
-      {notice ? <NoticeBox notice={notice} /> : null}
 
       <section className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 lg:grid-cols-[1fr_220px_220px]">
@@ -418,24 +400,6 @@ function StatBox({
       </div>
       <p className="mt-4 text-sm font-semibold text-slate-500">{helper}</p>
     </article>
-  );
-}
-
-function NoticeBox({ notice }: { notice: Notice }) {
-  const isSuccess = notice.type === "success";
-  const Icon = isSuccess ? CheckCircle2 : AlertCircle;
-
-  return (
-    <div
-      className={`flex items-start gap-2 rounded-md border px-4 py-3 text-sm font-bold ${
-        isSuccess
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : "border-red-200 bg-red-50 text-red-700"
-      }`}
-    >
-      <Icon size={17} className="mt-0.5 shrink-0" />
-      <span>{notice.text}</span>
-    </div>
   );
 }
 
@@ -731,8 +695,8 @@ function buildInvoiceDocument(invoice: InvoiceRecord): TDocumentDefinitions {
         columns: [
           [
             { text: "Đơn vị bán hàng", style: "strong" },
-            "Công ty Cổ phần CineX",
-            "Địa chỉ: 01 Nguyễn Văn Cừ, Thành phố Vinh, Nghệ An",
+            "Rạp chiếu phimCineX",
+            "Địa chỉ: 182 Lê Duẩn, phường Trường Vinh, Nghệ An",
             "Email: support@cinex.vn",
           ],
           [

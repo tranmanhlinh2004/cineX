@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import {
   CalendarClock,
   CheckCircle2,
@@ -27,6 +26,10 @@ import CalendarDatePicker, {
   formatCalendarDateIso,
   parseCalendarDateValue,
 } from "@/components/CalendarDatePicker";
+import {
+  PermissionButton,
+  PermissionLink,
+} from "@/components/admin/PermissionControls";
 
 type AdminMovieListVariant = "all" | "now-showing" | "coming-soon";
 
@@ -284,13 +287,14 @@ export default function AdminMoviesListPage({
           </p>
         </div>
 
-        <Link
+        <PermissionLink
           href="/admin/movies/new"
+          permissionRule={{ permission: "movie.create" }}
           className="inline-flex min-h-10 w-fit items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-black text-white transition hover:bg-red-700"
         >
           <Plus size={17} />
           Thêm phim
-        </Link>
+        </PermissionLink>
       </section>
 
       {moviesError ? (
@@ -441,29 +445,32 @@ export default function AdminMoviesListPage({
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center justify-center gap-2">
-                        <Link
+                        <PermissionLink
                           href={`/admin/movies/${movie.id}`}
+                          permissionRule={{ permission: "movie.view" }}
                           aria-label={`Xem ${movie.title}`}
                           className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-400 text-slate-600 transition hover:bg-slate-50"
                         >
                           <Eye size={16} />
-                        </Link>
-                        <Link
+                        </PermissionLink>
+                        <PermissionLink
                           href={`/admin/movies/${movie.id}/edit`}
+                          permissionRule={{ permission: "movie.update" }}
                           aria-label={`Sửa ${movie.title}`}
                           className="flex h-9 w-9 items-center justify-center rounded-md border border-blue-500 text-blue-600 transition hover:bg-blue-50"
                         >
                           <Pencil size={16} />
-                        </Link>
-                        <button
+                        </PermissionLink>
+                        <PermissionButton
                           type="button"
                           aria-label={`Xóa ${movie.title}`}
+                          permissionRule={{ permission: "movie.delete" }}
                           disabled={deletingMovieId === movie.id}
                           onClick={() => void deleteMovie(movie)}
                           className="flex h-9 w-9 items-center justify-center rounded-md border border-red-500 text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Trash2 size={16} />
-                        </button>
+                        </PermissionButton>
                       </div>
                     </td>
                   </tr>

@@ -43,12 +43,12 @@ export async function getMovieRecommendations(movieId: number) {
   } catch {
     return createEmptyRecommendationsData(
       movieId,
-      "Khong ket noi duoc backend. Hay chay backend o cong 4000.",
+      "Không kết nối được backend. Hãy chạy backend ở cổng 4000.",
     );
   }
 
   if (response.status === 404) {
-    return createEmptyRecommendationsData(movieId, "Khong tim thay phim.", {
+    return createEmptyRecommendationsData(movieId, "Không tìm thấy phim.", {
       notFound: true,
     });
   }
@@ -56,7 +56,7 @@ export async function getMovieRecommendations(movieId: number) {
   if (!response.ok) {
     return createEmptyRecommendationsData(
       movieId,
-      "Khong the tai goi y phim tu database.",
+      "Không thể tải gợi ý phim từ database.",
     );
   }
 

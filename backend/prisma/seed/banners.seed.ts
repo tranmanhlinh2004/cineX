@@ -2,7 +2,7 @@ import { prisma } from "./client";
 
 const banners = [
   {
-    title: "Dune: Part Two dang chieu",
+    title: "Dune: Part Two đang chiếu",
     imageUrl: "/movies/banner/now-showing/dune-part-two.jpg",
     linkUrl: "/movies/now-showing",
     position: "home-hero",
@@ -12,7 +12,7 @@ const banners = [
     endDate: new Date("2026-06-15T23:59:59.000+07:00"),
   },
   {
-    title: "Lat Mat 8 tai CineX",
+    title: "Lật Mặt 8 tại CineX",
     imageUrl: "/movies/banner/now-showing/lat-mat-8.jpg",
     linkUrl: "/ticket-booking?movie=lat-mat-8",
     position: "home-hero",
@@ -22,7 +22,7 @@ const banners = [
     endDate: new Date("2026-06-30T23:59:59.000+07:00"),
   },
   {
-    title: "Avengers Secret Wars sap ra mat",
+    title: "Avengers Secret Wars sắp ra mắt",
     imageUrl: "/movies/banner/coming-soon/avengers-secret-wars.jpg",
     linkUrl: "/movies/coming-soon",
     position: "coming-soon",
@@ -32,7 +32,7 @@ const banners = [
     endDate: new Date("2026-07-31T23:59:59.000+07:00"),
   },
   {
-    title: "Uu dai thanh vien moi",
+    title: "Ưu đãi thành viên mới",
     imageUrl: "/movies/banner/now-showing/mai.jpg",
     linkUrl: "/register",
     position: "promotion",
@@ -47,8 +47,8 @@ export async function seedBanners() {
   for (const banner of banners) {
     const existingBanner = await prisma.banner.findFirst({
       where: {
-        title: banner.title,
         position: banner.position,
+        linkUrl: banner.linkUrl,
       },
     });
 

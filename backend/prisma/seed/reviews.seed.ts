@@ -5,49 +5,49 @@ const reviewPlans = [
     email: "minhanh@example.com",
     movieSlug: "dune-part-two",
     rating: 5,
-    comment: "Hinh anh va am thanh rat dang xem o phong premium.",
+    comment: "Hình ảnh và âm thanh rất đáng xem ở phòng premium.",
   },
   {
     email: "hoangnam@example.com",
     movieSlug: "lat-mat-8",
     rating: 4,
-    comment: "Phim Viet de xem, nhieu khoanh khac cam xuc.",
+    comment: "Phim Việt dễ xem, nhiều khoảnh khắc cảm xúc.",
   },
   {
     email: "thuha@example.com",
     movieSlug: "mai",
     rating: 5,
-    comment: "Dien xuat tot, dat ghe va thanh toan nhanh.",
+    comment: "Diễn xuất tốt, đặt ghế và thanh toán nhanh.",
   },
   {
     email: "giabao@example.com",
     movieSlug: "exhuma",
     rating: 4,
-    comment: "Khong khi cang thang, phu hop xem suat toi.",
+    comment: "Không khí căng thẳng, phù hợp xem suất tối.",
   },
   {
     email: "minhanh@example.com",
     movieSlug: "suzume",
     rating: 5,
-    comment: "Anime dep, am nhac va mau sac rat cuon.",
+    comment: "Anime đẹp, âm nhạc và màu sắc rất cuốn.",
   },
   {
     email: "hoangnam@example.com",
     movieSlug: "oppenheimer",
     rating: 5,
-    comment: "Noi dung nang nhung rat dang trai nghiem tren man lon.",
+    comment: "Nội dung nặng nhưng rất đáng trải nghiệm trên màn lớn.",
   },
   {
     email: "thuha@example.com",
     movieSlug: "godzilla-minus-one",
     rating: 4,
-    comment: "Phan quai vat an tuong, nhip phim chac.",
+    comment: "Phần quái vật ấn tượng, nhịp phim chắc.",
   },
   {
     email: "giabao@example.com",
     movieSlug: "dragon-ball-super-broly",
     rating: 5,
-    comment: "Tran danh da mat, phu hop fan anime hanh dong.",
+    comment: "Trận đánh đã mắt, phù hợp fan anime hành động.",
   },
 ] as const;
 
@@ -90,5 +90,5 @@ export async function seedReviews() {
     seededReviews += 1;
   }
 
-  console.log(`Seed reviews thanh cong (${seededReviews} danh gia)`);
+  console.log(`Seed reviews thành công (${seededReviews} đánh giá)`);
 }

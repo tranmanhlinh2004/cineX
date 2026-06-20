@@ -2,33 +2,108 @@ import { prisma } from "./client";
 
 const rolePermissionNames = {
   MANAGER: [
+    "admin.access",
     "movie.view",
     "movie.create",
     "movie.update",
+    "movie.delete",
+    "genre.view",
+    "genre.create",
+    "genre.manage",
     "cinema.view",
+    "cinema.create",
     "cinema.update",
     "room.manage",
     "showtime.view",
     "showtime.manage",
+    "showtime.schedule.create",
+    "showtime.session.create",
     "booking.view",
     "booking.manage",
+    "booking.create",
+    "booking.cancel",
+    "booking.pay",
+    "booking.refund",
+    "refund.manage",
+    "payment.view",
+    "invoice.export",
     "promotion.manage",
     "banner.manage",
     "news.manage",
     "review.manage",
+    "review.reply",
+    "support.message.view",
+    "support.message.reply",
     "report.view",
+    "report.revenue.view",
+    "report.revenue.export",
+    "audit.view",
   ],
-  STAFF: [
+  CASHIER: [
+    "admin.access",
     "movie.view",
     "cinema.view",
     "showtime.view",
     "booking.view",
-    "booking.manage",
+    "booking.create",
+    "booking.cancel",
+    "booking.pay",
+    "booking.refund",
+    "refund.manage",
+    "payment.view",
+    "invoice.export",
   ],
-  CUSTOMER: ["movie.view", "cinema.view", "showtime.view", "booking.view"],
+  MOVIE_MANAGER: [
+    "admin.access",
+    "movie.view",
+    "movie.create",
+    "movie.update",
+    "movie.delete",
+    "genre.view",
+    "genre.create",
+    "genre.manage",
+    "cinema.view",
+    "room.manage",
+    "showtime.view",
+    "showtime.manage",
+    "showtime.schedule.create",
+    "showtime.session.create",
+  ],
+  ACCOUNTANT: [
+    "admin.access",
+    "booking.view",
+    "payment.view",
+    "invoice.export",
+    "report.view",
+    "report.revenue.view",
+    "report.revenue.export",
+  ],
+  CUSTOMER_SUPPORT: [
+    "admin.access",
+    "user.view",
+    "booking.view",
+    "review.manage",
+    "review.reply",
+    "support.message.view",
+    "support.message.reply",
+  ],
+  CUSTOMER: [
+    "site.access",
+    "account.manage",
+    "movie.view",
+    "genre.view",
+    "cinema.view",
+    "showtime.view",
+    "booking.view",
+    "booking.create",
+    "booking.pay",
+    "booking.refund.request",
+    "review.create",
+    "notification.view",
+  ],
 } as const;
 
-async function grantPermissions(roleName: string, permissionNames: readonly string[]) {
+async function syncRolePermissions(roleName: string, permissionNames: readonly string[]) {
   const role = await prisma.role.findUnique({
     where: { name: roleName },
   });
@@ -40,6 +115,27 @@ async function grantPermissions(roleName: string, permissionNames: readonly stri
   const permissions = await prisma.permission.findMany({
     where: {
       name: { in: [...permissionNames] },
+    },
+  });
+  const permissionIds = permissions.map((permission) => permission.id);
+
+  if (permissions.length !== permissionNames.length) {
+    const foundPermissionNames = new Set(permissions.map((permission) => permission.name));
+    const missingPermissionNames = permissionNames.filter(
+      (permissionName) => !foundPermissionNames.has(permissionName),
+    );
+
+    throw new Error(
+      `Missing permissions for role ${roleName}: ${missingPermissionNames.join(", ")}`,
+    );
+  }
+
+  await prisma.rolePermission.deleteMany({
+    where: {
+      roleId: role.id,
+      permissionId: {
+        notIn: permissionIds,
+      },
     },
   });
 
@@ -61,34 +157,15 @@ async function grantPermissions(roleName: string, permissionNames: readonly stri
 }
 
 export async function seedRolePermissions() {
-  const adminRole = await prisma.role.findUnique({
-    where: { name: "ADMIN" },
-  });
-
-  if (!adminRole) {
-    throw new Error("Role ADMIN does not exist");
-  }
-
   const allPermissions = await prisma.permission.findMany();
 
-  for (const permission of allPermissions) {
-    await prisma.rolePermission.upsert({
-      where: {
-        roleId_permissionId: {
-          roleId: adminRole.id,
-          permissionId: permission.id,
-        },
-      },
-      update: {},
-      create: {
-        roleId: adminRole.id,
-        permissionId: permission.id,
-      },
-    });
-  }
+  await syncRolePermissions(
+    "ADMIN",
+    allPermissions.map((permission) => permission.name),
+  );
 
   for (const [roleName, permissionNames] of Object.entries(rolePermissionNames)) {
-    await grantPermissions(roleName, permissionNames);
+    await syncRolePermissions(roleName, permissionNames);
   }
 
   console.log("Seed role permissions thanh cong");

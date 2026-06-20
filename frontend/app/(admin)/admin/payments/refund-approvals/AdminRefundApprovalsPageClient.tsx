@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  AlertCircle,
   Banknote,
   CheckCircle2,
   Eye,
@@ -20,11 +19,13 @@ import {
   type AdminRefundStats,
   type AdminRefundStatusCode,
 } from "@/lib/admin-refunds-api";
-
-type Notice = {
-  type: "success" | "error";
-  text: string;
-};
+import { PermissionButton } from "@/components/admin/PermissionControls";
+import {
+  canUsePermissionRule,
+  permissionDeniedMessage,
+} from "@/lib/admin-permissions";
+import { showToast } from "@/lib/toast";
+import { useAuthUser } from "@/lib/use-auth-user";
 
 const statusFilterOptions: { value: "ALL" | AdminRefundStatusCode; label: string }[] = [
   { value: "ALL", label: "Tất cả trạng thái" },
@@ -53,6 +54,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
 });
 
 export default function AdminRefundApprovalsPageClient() {
+  const authUser = useAuthUser();
   const [refundRequests, setRefundRequests] = useState<AdminRefundRequest[]>([]);
   const [stats, setStats] = useState<AdminRefundStats>(emptyStats);
   const [query, setQuery] = useState("");
@@ -61,7 +63,6 @@ export default function AdminRefundApprovalsPageClient() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionId, setActionId] = useState<number | null>(null);
-  const [notice, setNotice] = useState<Notice | null>(null);
 
   const loadRefundRequests = async (options: { silent?: boolean } = {}) => {
     if (options.silent) {
@@ -69,22 +70,18 @@ export default function AdminRefundApprovalsPageClient() {
     } else {
       setIsLoading(true);
     }
-
-    setNotice(null);
-
     try {
       const data = await getAdminRefundRequests();
 
       setRefundRequests(data.refundRequests);
       setStats(data.stats);
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải danh sách yêu cầu hoàn tiền.",
-      });
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "Không thể tải danh sách yêu cầu hoàn tiền.",
+        "error",
+      );
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -136,6 +133,16 @@ export default function AdminRefundApprovalsPageClient() {
     refundRequest: AdminRefundRequest,
     decision: "approve" | "reject",
   ) => {
+    const permissionsLoaded = Array.isArray(authUser?.permissions);
+
+    if (
+      permissionsLoaded &&
+      !canUsePermissionRule(authUser, { permission: "refund.manage" })
+    ) {
+      showToast(permissionDeniedMessage, "error");
+      return;
+    }
+
     const reviewerNote =
       decision === "reject"
         ? window.prompt("Nhập lý do từ chối hoàn tiền", "Không đủ điều kiện hoàn tiền.") ?? ""
@@ -146,7 +153,6 @@ export default function AdminRefundApprovalsPageClient() {
     }
 
     setActionId(refundRequest.id);
-    setNotice(null);
 
     try {
       const result =
@@ -158,16 +164,15 @@ export default function AdminRefundApprovalsPageClient() {
         replaceRefundRequest(result.refundRequest);
       }
 
-      setNotice({ type: "success", text: result.message });
+      showToast(result.message, "success");
       await loadRefundRequests({ silent: true });
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể cập nhật yêu cầu hoàn tiền.",
-      });
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "Không thể cập nhật yêu cầu hoàn tiền.",
+        "error",
+      );
     } finally {
       setActionId(null);
     }
@@ -228,8 +233,6 @@ export default function AdminRefundApprovalsPageClient() {
           icon={<Banknote size={21} />}
         />
       </section>
-
-      {notice ? <NoticeBox notice={notice} /> : null}
 
       <section className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 lg:grid-cols-[1fr_220px]">
@@ -341,6 +344,7 @@ export default function AdminRefundApprovalsPageClient() {
                           <IconButton
                             label={`Phê duyệt ${refundRequest.refundCode}`}
                             tone="success"
+                            permissionRule={{ permission: "refund.manage" }}
                             disabled={!isPending || isActing}
                             onClick={() => void handleReview(refundRequest, "approve")}
                           >
@@ -349,6 +353,7 @@ export default function AdminRefundApprovalsPageClient() {
                           <IconButton
                             label={`Từ chối ${refundRequest.refundCode}`}
                             tone="danger"
+                            permissionRule={{ permission: "refund.manage" }}
                             disabled={!isPending || isActing}
                             onClick={() => void handleReview(refundRequest, "reject")}
                           >
@@ -415,24 +420,6 @@ function StatBox({
   );
 }
 
-function NoticeBox({ notice }: { notice: Notice }) {
-  const isSuccess = notice.type === "success";
-  const Icon = isSuccess ? CheckCircle2 : AlertCircle;
-
-  return (
-    <div
-      className={`flex items-start gap-2 rounded-md border px-4 py-3 text-sm font-bold ${
-        isSuccess
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : "border-red-200 bg-red-50 text-red-700"
-      }`}
-    >
-      <Icon size={17} className="mt-0.5 shrink-0" />
-      <span>{notice.text}</span>
-    </div>
-  );
-}
-
 function TableHead({
   children,
   align = "left",
@@ -486,12 +473,14 @@ function IconButton({
   label,
   tone,
   disabled,
+  permissionRule,
   onClick,
   children,
 }: {
   label: string;
   tone: "neutral" | "success" | "danger";
   disabled?: boolean;
+  permissionRule?: { permission: string };
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -503,16 +492,17 @@ function IconButton({
         : "border-slate-400 text-slate-600 hover:bg-slate-50";
 
   return (
-    <button
+    <PermissionButton
       type="button"
       aria-label={label}
       title={label}
+      permissionRule={permissionRule}
       disabled={disabled}
       onClick={onClick}
       className={`flex h-9 w-9 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 ${className}`}
     >
       {children}
-    </button>
+    </PermissionButton>
   );
 }
 
@@ -582,24 +572,26 @@ function RefundDetailModal({
           >
             Đóng
           </button>
-          <button
+          <PermissionButton
             type="button"
             disabled={!isPending || isActing}
+            permissionRule={{ permission: "refund.manage" }}
             onClick={() => void onReview(refundRequest, "reject")}
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-red-500 px-4 text-sm font-black text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
           >
             <XCircle size={17} />
             Từ chối
-          </button>
-          <button
+          </PermissionButton>
+          <PermissionButton
             type="button"
             disabled={!isPending || isActing}
+            permissionRule={{ permission: "refund.manage" }}
             onClick={() => void onReview(refundRequest, "approve")}
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 text-sm font-black text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
           >
             {isActing ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}
             Phê duyệt
-          </button>
+          </PermissionButton>
         </div>
       </div>
     </div>

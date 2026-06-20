@@ -3,6 +3,7 @@ import { seedAuditLogs } from "./auditLogs.seed";
 import { seedBanners } from "./banners.seed";
 import { seedBookings } from "./bookings.seed";
 import { seedCinemas } from "./cinemas.seed";
+import { seedContactMessages } from "./contactMessages.seed";
 import { seedGenres } from "./genres.seed";
 import { seedMovies } from "./movies.seed";
 import { syncMovieMetadata } from "./movieMetadata.seed";
@@ -41,6 +42,7 @@ async function main() {
   await seedBanners();
   await seedNews();
   await seedReviews();
+  await seedContactMessages();
   await seedBookings();
   await seedSeatHolds();
   await seedAuditLogs();

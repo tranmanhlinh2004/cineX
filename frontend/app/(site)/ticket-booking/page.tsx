@@ -5,11 +5,9 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  AlertCircle,
   Armchair,
   CalendarDays,
   Check,
-  CheckCircle2,
   Clock3,
   Film,
   Loader2,
@@ -21,6 +19,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { getAuthToken } from "@/lib/auth";
 import { createLoadingPath } from "@/lib/navigation";
+import { showToast } from "@/lib/toast";
 import {
   applyTicketBookingPromotion,
   createTicketBooking,
@@ -69,11 +68,6 @@ const emptyShowtimes: TicketBookingOptions["showtimes"] = [];
 const emptyPaymentMethods: TicketBookingOptions["paymentMethods"] = [];
 const seatMapRefreshIntervalMs = 5000;
 
-type Notice = {
-  type: "success" | "error";
-  text: string;
-};
-
 type ShowtimeFilter = {
   date: string;
   cinemaSlug: string;
@@ -94,12 +88,10 @@ export default function TicketBookingPage() {
   const [isLoadingOptions, setIsLoadingOptions] = useState(true);
   const [isLoadingSeats, setIsLoadingSeats] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [notice, setNotice] = useState<Notice | null>(null);
   const [isCounterSale, setIsCounterSale] = useState(false);
   const [promotionCode, setPromotionCode] = useState("");
   const [appliedPromotion, setAppliedPromotion] =
     useState<TicketBookingPromotionPreview | null>(null);
-  const [promotionNotice, setPromotionNotice] = useState<Notice | null>(null);
   const [isApplyingPromotion, setIsApplyingPromotion] = useState(false);
 
   const movies = options?.movies ?? emptyMovies;
@@ -167,7 +159,6 @@ export default function TicketBookingPage() {
 
   const clearAppliedPromotion = () => {
     setAppliedPromotion(null);
-    setPromotionNotice(null);
   };
 
   const loadSeatMap = async (
@@ -176,7 +167,6 @@ export default function TicketBookingPage() {
   ) => {
     if (!options.silent) {
       setIsLoadingSeats(true);
-      setNotice(null);
     }
 
     try {
@@ -207,11 +197,10 @@ export default function TicketBookingPage() {
         );
 
         if (options.silent && nextSeatIds.length < currentSeatIds.length) {
-          setNotice({
-            type: "error",
-            text:
-              "Một hoặc nhiều ghế bạn đang chọn vừa được giữ hoặc đặt bởi khách khác. Vui lòng chọn ghế khác.",
-          });
+          showToast(
+            "Một hoặc nhiều ghế bạn đang chọn vừa được giữ hoặc đặt bởi khách khác. Vui lòng chọn ghế khác.",
+            "error",
+          );
           clearAppliedPromotion();
         }
 
@@ -220,13 +209,10 @@ export default function TicketBookingPage() {
     } catch (error) {
       if (!options.silent) {
         setSeatMap(null);
-        setNotice({
-          type: "error",
-          text:
-            error instanceof Error
-              ? error.message
-              : "Không thể tải sơ đồ ghế.",
-        });
+        showToast(
+          error instanceof Error ? error.message : "Không thể tải sơ đồ ghế.",
+          "error",
+        );
       }
     } finally {
       if (!options.silent) {
@@ -267,7 +253,6 @@ export default function TicketBookingPage() {
 
   const loadOptions = async () => {
     setIsLoadingOptions(true);
-    setNotice(null);
 
     try {
       const params = new URLSearchParams(window.location.search);
@@ -287,13 +272,12 @@ export default function TicketBookingPage() {
         await loadSeatMap(initialShowtime.id);
       }
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải dữ liệu đặt vé từ database.",
-      });
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "Không thể tải dữ liệu đặt vé từ database.",
+        "error",
+      );
     } finally {
       setIsLoadingOptions(false);
     }
@@ -385,32 +369,22 @@ export default function TicketBookingPage() {
       setAppliedPromotion(null);
     }
 
-    if (promotionNotice) {
-      setPromotionNotice(null);
-    }
   };
 
   const handleApplyPromotion = async () => {
     const code = promotionCode.trim().toUpperCase();
 
     if (!code) {
-      setPromotionNotice({
-        type: "error",
-        text: "Vui lòng nhập mã giảm giá.",
-      });
+      showToast("Vui lòng nhập mã giảm giá.", "error");
       return;
     }
 
     if (seatSubtotal <= 0) {
-      setPromotionNotice({
-        type: "error",
-        text: "Vui lòng chọn ghế trước khi áp dụng mã giảm giá.",
-      });
+      showToast("Vui lòng chọn ghế trước khi áp dụng mã giảm giá.", "error");
       return;
     }
 
     setIsApplyingPromotion(true);
-    setPromotionNotice(null);
 
     try {
       const promotion = await applyTicketBookingPromotion({
@@ -420,19 +394,13 @@ export default function TicketBookingPage() {
 
       setAppliedPromotion(promotion);
       setPromotionCode(promotion.code);
-      setPromotionNotice({
-        type: "success",
-        text: promotion.message,
-      });
+      showToast(promotion.message, "success");
     } catch (error) {
       setAppliedPromotion(null);
-      setPromotionNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể áp dụng mã giảm giá.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể áp dụng mã giảm giá.",
+        "error",
+      );
     } finally {
       setIsApplyingPromotion(false);
     }
@@ -440,20 +408,17 @@ export default function TicketBookingPage() {
 
   const handleSubmit = async () => {
     if (!selectedShowtimeId || selectedSeatIds.length === 0) {
-      setNotice({
-        type: "error",
-        text: "Vui lòng chọn suất chiếu và ghế trước khi đặt vé.",
-      });
+      showToast("Vui lòng chọn suất chiếu và ghế trước khi đặt vé.", "error");
       return;
     }
 
     if (!getAuthToken()) {
+      showToast("Vui lòng đăng nhập để đặt vé.", "info");
       router.push(createLoadingPath("/login"));
       return;
     }
 
     setIsSubmitting(true);
-    setNotice(null);
 
     try {
       const result = await createTicketBooking({
@@ -463,19 +428,13 @@ export default function TicketBookingPage() {
         promotionCode: appliedPromotion?.code,
       });
 
-      setNotice({
-        type: "success",
-        text: result.message,
-      });
+      showToast(result.message, "success");
       router.push(createLoadingPath(isCounterSale ? "/admin/bookings" : "/account/booking"));
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tạo đơn đặt vé.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể tạo đơn đặt vé.",
+        "error",
+      );
 
       if (selectedShowtimeId) {
         await loadSeatMap(selectedShowtimeId);
@@ -521,8 +480,6 @@ export default function TicketBookingPage() {
   return (
     <main className="min-h-screen bg-[#0d0f12] text-white">
       <section className="mx-auto max-w-[1320px] px-4 pb-16 pt-6 sm:px-6 lg:px-8">
-        {notice ? <NoticeBox notice={notice} /> : null}
-
         <section className="relative overflow-hidden rounded-lg border border-white/10 bg-[#151719] shadow-2xl">
           {selectedMovie ? (
             <img
@@ -855,15 +812,6 @@ export default function TicketBookingPage() {
                         Áp dụng
                       </button>
                     </div>
-                    {promotionNotice ? (
-                      <span
-                        className={`text-xs font-semibold normal-case ${
-                          promotionNotice.type === "success" ? "text-emerald-300" : "text-red-300"
-                        }`}
-                      >
-                        {promotionNotice.text}
-                      </span>
-                    ) : null}
                   </label>
 
                   <label className="mt-4 grid gap-2 text-xs font-bold uppercase text-white/45">
@@ -928,24 +876,6 @@ export default function TicketBookingPage() {
         </div>
       </section>
     </main>
-  );
-}
-
-function NoticeBox({ notice }: { notice: Notice }) {
-  const isSuccess = notice.type === "success";
-  const Icon = isSuccess ? CheckCircle2 : AlertCircle;
-
-  return (
-    <div
-      className={`mb-5 flex items-start gap-2 rounded-md border px-4 py-3 text-sm font-bold ${
-        isSuccess
-          ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
-          : "border-red-400/30 bg-red-500/10 text-red-100"
-      }`}
-    >
-      <Icon size={17} className="mt-0.5 shrink-0" />
-      <span>{notice.text}</span>
-    </div>
   );
 }
 

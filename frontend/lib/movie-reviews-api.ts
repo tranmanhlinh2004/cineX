@@ -21,7 +21,7 @@ export async function submitMovieReview(
   const token = getAuthToken();
 
   if (!token) {
-    throw new Error("Vui long dang nhap de binh luan va danh gia phim.");
+    throw new Error("Vui lòng đăng nhập để bình luận và đánh giá phim.");
   }
 
   let response: Response;
@@ -36,7 +36,7 @@ export async function submitMovieReview(
       body: JSON.stringify(payload),
     });
   } catch {
-    throw new Error("Khong ket noi duoc backend. Hay chay backend o cong 4000.");
+    throw new Error("Không kết nối được backend. Hãy chạy backend ở cổng 4000.");
   }
 
   const data = (await response.json().catch(() => null)) as
@@ -44,11 +44,11 @@ export async function submitMovieReview(
     | null;
 
   if (!response.ok) {
-    throw new Error(data?.message || "Khong the luu binh luan va danh gia.");
+    throw new Error(data?.message || "Không thể lưu bình luận và đánh giá.");
   }
 
   if (!data?.movie) {
-    throw new Error("Phan hoi danh gia khong hop le.");
+    throw new Error("Phản hồi đánh giá không hợp lệ.");
   }
 
   return data as MovieReviewResponse;

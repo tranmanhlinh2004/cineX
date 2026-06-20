@@ -3,8 +3,8 @@ import { prisma } from "./client";
 const promotions = [
   {
     code: "CINEX20",
-    name: "Giam 20% ve dau tien",
-    description: "Ap dung cho don tu 100.000d, toi da 50.000d.",
+    name: "Giảm 20% vé đầu tiên",
+    description: "Áp dụng cho đơn từ 100.000đ, tối đa 50.000đ.",
     type: "PERCENT" as const,
     discountPercent: 20,
     discountAmount: null,
@@ -18,8 +18,8 @@ const promotions = [
   },
   {
     code: "WEEKEND30",
-    name: "Cuoi tuan giam 30.000d",
-    description: "Giam truc tiep cho cac suat chieu thu bay va chu nhat.",
+    name: "Cuối tuần giảm 30.000đ",
+    description: "Giảm trực tiếp cho các suất chiếu thứ bảy và chủ nhật.",
     type: "AMOUNT" as const,
     discountPercent: null,
     discountAmount: 30000,
@@ -33,8 +33,8 @@ const promotions = [
   },
   {
     code: "FAMILY50",
-    name: "Combo gia dinh",
-    description: "Giam 50.000d cho don tu 4 ve.",
+    name: "Combo gia đình",
+    description: "Giảm 50.000đ cho đơn từ 4 vé.",
     type: "AMOUNT" as const,
     discountPercent: null,
     discountAmount: 50000,
@@ -48,8 +48,8 @@ const promotions = [
   },
   {
     code: "STUDENT15",
-    name: "Uu dai hoc sinh sinh vien",
-    description: "Giam 15% cho tai khoan xac minh sinh vien.",
+    name: "Ưu đãi học sinh sinh viên",
+    description: "Giảm 15% cho tài khoản xác minh sinh viên.",
     type: "PERCENT" as const,
     discountPercent: 15,
     discountAmount: null,

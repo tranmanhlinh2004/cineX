@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  AlertCircle,
   CheckCircle2,
   CircleDollarSign,
   ClipboardCheck,
@@ -20,11 +19,7 @@ import {
   type AdminPaymentStatusCode,
   type AdminPaymentTransaction,
 } from "@/lib/admin-payments-api";
-
-type Notice = {
-  type: "error";
-  text: string;
-};
+import { showToast } from "@/lib/toast";
 
 const emptyStats: AdminPaymentStats = {
   totalTransactions: 0,
@@ -74,7 +69,6 @@ export default function AdminPaymentTransactionsPageClient() {
     useState<AdminPaymentTransaction | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [notice, setNotice] = useState<Notice | null>(null);
 
   const loadTransactions = async (options: { silent?: boolean } = {}) => {
     if (options.silent) {
@@ -82,22 +76,16 @@ export default function AdminPaymentTransactionsPageClient() {
     } else {
       setIsLoading(true);
     }
-
-    setNotice(null);
-
     try {
       const data = await getAdminPaymentTransactions();
 
       setTransactions(data.transactions);
       setStats(data.stats);
     } catch (error) {
-      setNotice({
-        type: "error",
-        text:
-          error instanceof Error
-            ? error.message
-            : "Không thể tải danh sách giao dịch.",
-      });
+      showToast(
+        error instanceof Error ? error.message : "Không thể tải danh sách giao dịch.",
+        "error",
+      );
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -202,8 +190,6 @@ export default function AdminPaymentTransactionsPageClient() {
           tone="warning"
         />
       </section>
-
-      {notice ? <NoticeBox notice={notice} /> : null}
 
       <section className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 lg:grid-cols-[1fr_220px_220px]">
@@ -387,15 +373,6 @@ function StatBox({
       </div>
       <p className="mt-4 text-sm font-semibold text-slate-500">{helper}</p>
     </article>
-  );
-}
-
-function NoticeBox({ notice }: { notice: Notice }) {
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
-      <AlertCircle size={17} className="mt-0.5 shrink-0" />
-      <span>{notice.text}</span>
-    </div>
   );
 }
 

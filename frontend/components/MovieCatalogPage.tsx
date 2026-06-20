@@ -323,7 +323,7 @@ export default function MovieCatalogPage({
             </div>
 
             <p className="text-sm text-white/50">
-              {filteredMovies.length} phim phu hop tren trang {currentPage}
+              {filteredMovies.length} phim phù hợp trên trang {currentPage}
             </p>
           </div>
 
@@ -452,7 +452,7 @@ function HeroMovie({
               className="inline-flex items-center justify-center gap-2 rounded-md border border-white/10 bg-white/10 px-6 py-3 text-sm font-bold text-white transition hover:border-white/35 hover:bg-white/15"
             >
               <Film size={18} />
-              Chi tiet phim
+              Chi tiết phim
             </Link>
 
             <a
@@ -503,7 +503,7 @@ function PaginationControls({
           disabled={!pagination.hasPreviousPage}
         >
           <ChevronLeft size={16} />
-          Truoc
+          Trước
         </PaginationLink>
 
         {items.map((item, index) =>

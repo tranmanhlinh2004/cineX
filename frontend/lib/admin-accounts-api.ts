@@ -37,6 +37,7 @@ export type AdminAccountPayload = {
   email: string;
   phone: string;
   role: string;
+  roleName?: string;
   status: string;
   password?: string;
 };

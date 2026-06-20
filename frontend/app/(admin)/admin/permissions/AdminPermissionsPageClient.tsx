@@ -45,36 +45,60 @@ type PermissionGroup = {
 
 const roleRows: PermissionRole[] = [
   {
-    id: "super-admin",
-    role: "Super Admin",
-    scope: "Toàn hệ thống",
+    id: "admin",
+    role: "Quản trị viên",
+    scope: "Toàn bộ website quản trị",
     users: "2",
-    permissions: "42",
+    permissions: "Tất cả",
     status: "Đang hoạt động",
   },
   {
-    id: "cinema-manager",
-    role: "Quản lý rạp",
-    scope: "Cụm rạp được gán",
+    id: "manager",
+    role: "Quản lý",
+    scope: "Vận hành tổng quan",
     users: "8",
-    permissions: "24",
+    permissions: "36",
     status: "Đang hoạt động",
   },
   {
-    id: "ticket-staff",
-    role: "Nhân viên bán vé",
-    scope: "Đặt vé, thanh toán, vé",
+    id: "cashier",
+    role: "Nhân viên thu ngân",
+    scope: "Đơn hàng, hoàn tiền, hóa đơn",
     users: "18",
     permissions: "12",
     status: "Đang hoạt động",
   },
   {
+    id: "movie-manager",
+    role: "Nhân viên quản lý phim",
+    scope: "Phim, thể loại, lịch chiếu",
+    users: "5",
+    permissions: "14",
+    status: "Đang hoạt động",
+  },
+  {
     id: "accountant",
-    role: "Kế toán",
+    role: "Nhân viên kế toán",
     scope: "Doanh thu, thanh toán",
     users: "4",
-    permissions: "10",
-    status: "Chờ rà soát",
+    permissions: "7",
+    status: "Đang hoạt động",
+  },
+  {
+    id: "customer-support",
+    role: "Nhân viên chăm sóc khách hàng",
+    scope: "Bình luận, đánh giá, liên hệ",
+    users: "6",
+    permissions: "7",
+    status: "Đang hoạt động",
+  },
+  {
+    id: "customer",
+    role: "Khách hàng",
+    scope: "Website người dùng",
+    users: "1.240",
+    permissions: "12",
+    status: "Đang hoạt động",
   },
 ];
 
@@ -139,6 +163,7 @@ const permissionGroups: PermissionGroup[] = [
           { id: "booking.update", label: "Cập nhật đơn" },
           { id: "booking.cancel", label: "Hủy đơn" },
           { id: "booking.refund", label: "Hoàn tiền" },
+          { id: "booking.invoice", label: "Xuất hóa đơn" },
         ],
       },
       {
@@ -188,6 +213,42 @@ const permissionGroups: PermissionGroup[] = [
       },
     ],
   },
+  {
+    title: "Chăm sóc khách hàng",
+    modules: [
+      {
+        id: "customer-feedback",
+        label: "Bình luận và đánh giá",
+        permissions: [
+          { id: "customer-feedback.view", label: "Xem bình luận / đánh giá" },
+          { id: "customer-feedback.reply", label: "Trả lời bình luận / đánh giá" },
+        ],
+      },
+      {
+        id: "contact-channel",
+        label: "Kênh liên hệ",
+        permissions: [
+          { id: "contact-channel.view", label: "Xem tin nhắn liên hệ" },
+          { id: "contact-channel.reply", label: "Trả lời tin nhắn liên hệ" },
+        ],
+      },
+    ],
+  },
+  {
+    title: "Website người dùng",
+    modules: [
+      {
+        id: "customer-site",
+        label: "Chức năng khách hàng",
+        permissions: [
+          { id: "customer-site.access", label: "Truy cập website người dùng" },
+          { id: "customer-site.booking", label: "Đặt vé và thanh toán" },
+          { id: "customer-site.refund", label: "Gửi yêu cầu hoàn tiền" },
+          { id: "customer-site.review", label: "Bình luận / đánh giá" },
+        ],
+      },
+    ],
+  },
 ];
 
 const allPermissionIds = permissionGroups.flatMap((group) =>
@@ -197,10 +258,12 @@ const allPermissionIds = permissionGroups.flatMap((group) =>
 );
 
 const defaultRolePermissions: Record<string, string[]> = {
-  "super-admin": allPermissionIds,
-  "cinema-manager": [
+  admin: allPermissionIds,
+  manager: [
     "movie-catalog.view",
+    "movie-catalog.create",
     "movie-catalog.update",
+    "movie-catalog.delete",
     "movie-status.now",
     "movie-status.soon",
     "movie-status.publish",
@@ -210,25 +273,55 @@ const defaultRolePermissions: Record<string, string[]> = {
     "showtime.update",
     "showtime.price",
     "booking.view",
+    "booking.create",
     "booking.update",
+    "booking.cancel",
+    "booking.refund",
+    "booking.invoice",
     "ticket.view",
     "daily-report.summary",
     "daily-report.movies",
     "revenue.view",
+    "revenue.export",
+    "customer-feedback.view",
+    "customer-feedback.reply",
+    "contact-channel.view",
+    "contact-channel.reply",
   ],
-  "ticket-staff": [
+  cashier: [
     "movie-catalog.view",
     "showtime.view",
     "booking.view",
     "booking.create",
     "booking.update",
     "booking.cancel",
+    "booking.refund",
+    "booking.invoice",
     "ticket.view",
     "ticket.issue",
     "ticket.scan",
   ],
+  "movie-manager": [
+    "movie-catalog.view",
+    "movie-catalog.create",
+    "movie-catalog.update",
+    "movie-catalog.delete",
+    "movie-status.now",
+    "movie-status.soon",
+    "movie-status.pause",
+    "movie-status.publish",
+    "movie-genre.view",
+    "movie-genre.create",
+    "movie-genre.update",
+    "movie-genre.delete",
+    "showtime.view",
+    "showtime.create",
+    "showtime.update",
+    "showtime.price",
+  ],
   accountant: [
     "booking.view",
+    "booking.invoice",
     "ticket.view",
     "daily-report.summary",
     "daily-report.payments",
@@ -236,6 +329,19 @@ const defaultRolePermissions: Record<string, string[]> = {
     "revenue.export",
     "revenue.compare",
     "revenue.detail",
+  ],
+  "customer-support": [
+    "booking.view",
+    "customer-feedback.view",
+    "customer-feedback.reply",
+    "contact-channel.view",
+    "contact-channel.reply",
+  ],
+  customer: [
+    "customer-site.access",
+    "customer-site.booking",
+    "customer-site.refund",
+    "customer-site.review",
   ],
 };
 
